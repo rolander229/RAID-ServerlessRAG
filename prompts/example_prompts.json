@@ -1,0 +1,4 @@
+{
+    "sys_prompt": "You're a helpful assistant named Friday.",
+    "user_prompt": "Please help me with the following task: {task}"
+}
