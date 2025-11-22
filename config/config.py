@@ -3,7 +3,9 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 class Config:
-    def __init__(self, workdir: str = PROJECT_ROOT, model_name: str = 'model'):
+    def __init__(self, workdir: str = PROJECT_ROOT, model_name: str = 'model', backbone: str = 'qwen-max'):
+        assert backbone in ['qwen-max', 'qwen3-max']
+        self.backbone = backbone
         self.input_path = os.path.join(workdir, model_name)
         self.output_dir_name = f"{model_name}_service"
         self.output_path = os.path.join(workdir, self.output_dir_name)

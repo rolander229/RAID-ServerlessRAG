@@ -154,7 +154,16 @@ def print_file_tree(root_path: str, max_depth: Optional[int] = None, respect_git
     _print_node(tree, prefix="    ")
 
 def load_file_tree(root_path: str, max_depth: Optional[int] = None, respect_gitignore: bool = True) -> ToolResponse:
-    """Load the file tree as a nested dictionary."""
+    """{Load the file tree as a nested dictionary.}
+    Args:
+        root_path (str):
+            {Path to start listing from.}
+        max_depth (Optional[int]):
+            {Optional maximum recursion depth.}
+        respect_gitignore (bool):
+            {If True, excludes files/directories matching .gitignore patterns.}
+
+    """
     tree = list_files_hierarchy(root_path, max_depth, respect_gitignore)
     try:
         return ToolResponse(

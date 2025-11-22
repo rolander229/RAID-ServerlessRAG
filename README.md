@@ -1,5 +1,7 @@
 # ModelDeployAgent
 ## Tools
+- use `uv` to manage dependencies
+- use `ruff` to check code style and fix simple issues
 - Initial idea for tool building
   - use `ToolFileList.py` to get the current code hierarchy
   - use `ToolGraphAnalysis.py` to analyze the code functions calling graph structure

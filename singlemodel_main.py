@@ -2,7 +2,11 @@ from agentscope.agent import ReActAgent, UserAgent
 from agentscope.model import DashScopeChatModel
 from agentscope.formatter import DashScopeChatFormatter
 from agentscope.memory import InMemoryMemory
-from agentscope.tool import Toolkit, execute_python_code, execute_shell_command, ToolResponse
+from agentscope.tool import (Toolkit, execute_python_code,
+                             execute_shell_command, view_text_file,
+                             write_text_file, insert_text_file)
+from tools.ToolRuffFix import py_ruff_fix
+from tools.ToolFileList import load_file_tree
 from agentscope.message import Msg
 
 from config.config import Config
@@ -14,8 +18,11 @@ import argparse
 
 def build_toolkit() -> Toolkit:
     toolkit = Toolkit()
-    toolkit.register_tool_function(execute_python_code)
+    toolkit.register_tool_function(load_file_tree)
+    toolkit.register_tool_function(view_text_file)
+    toolkit.register_tool_function(write_text_file)
     toolkit.register_tool_function(execute_shell_command)
+    toolkit.register_tool_function(py_ruff_fix)
     return toolkit
 
 
@@ -31,7 +38,7 @@ async def main(configs):
         You are an expert software engineer specialized in refactoring AI model code for deployment as function-services on Kubernetes.
         """,
         model=DashScopeChatModel(
-            model_name="qwen3-max",
+            model_name=configs.backbone,
             api_key=os.environ["DASHSCOPE_API_KEY"],
             stream=True,
             enable_thinking=False,
@@ -64,20 +71,18 @@ async def main(configs):
     refactor_msg = Msg(
         name="user",
         content=f"""Hi! Your task is to:
-        1. Analyze the provided AI model code at `{configs.input_path}`, refactoring the code into multiple functional python files as needed. An entry `app.py` file should be created to run the model.
-        2. You do not need to execute the code to validate, just refactor based on your analysis.
-        3. You need generate the requirements.txt file listing all dependencies, dockfile and k8s yaml files.
-        4. The refactored code should be saved at `{configs.output_path}`. ".
+        1. Use "load_file_tree" tool to get the file tree of the AI model code at `{configs.input_path}`. Args of the tool: root_path=`{configs.input_path}`.
+        2. View all files obtained in step 1 using "view_text_file" tool as needed to understand the code structure and functionality.
+        3. Analyze the the code information you obtained and refactor the code into multiple functional python files as needed for k8s deployment. An entry `app.py` file should be created to run the model. The refactored code should be saved at `{configs.output_path}` using "write_text_file" tool as needed.
+        4. Use "py_ruff_fix" tool to fix any linting or dependency issues for the obtained refactored codes in `{configs.output_path}`. Args of the tool: root_path=`{configs.output_path}`.
+        5. Fix the issues found in step 4 using "write_text_file" tool as needed.
         """,
         role="user",
     )
 
-
     await RefactorAgent(refactor_msg)
     logger.info("Refactoring task completed.")
 
-    # await K8SAgent(msg2)
-    # print("Deployment files creation task completed.")
     return
 
 
@@ -86,6 +91,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Model Code Refactoring Agent")
     parser.add_argument("--input_path", type=str, required=False, help="Father path of the AI model code to be refactored")
     parser.add_argument("--model_name", type=str, required=False, help="Name of the AI model to be refactored", default="saliency")
+    parser.add_argument("--backbone", type=str, required=False, help="Backbone of Agent Model", default="qwen-max")
     args = parser.parse_args()
 
     workdir = "/Users/dinghaoxue/Projects/hello-agentscope/.tmp_cache/.pipes"
@@ -93,7 +99,7 @@ if __name__ == "__main__":
     args.input_path = workdir
     args.model_name = model_name
 
-    configs = Config(args.input_path, args.model_name)
+    configs = Config(args.input_path, args.model_name, args.backbone)
 
     # configure top-level logger for the run
     app_logger = get_logger("singlemodel_main", level=os.getenv("LOG_LEVEL", "INFO"))

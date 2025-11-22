@@ -4,10 +4,55 @@ from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 import argparse
 import os
-from ToolFileList import list_files_hierarchy
+from tools.ToolFileList import list_files_hierarchy
 import subprocess
 
-def dependency_check_fix(root_path: str, max_depth: Optional[int] = None, respect_gitignore: bool = True) -> ToolResponse:
+def py_ruff_fix(root_path: str) -> ToolResponse:
+    """ Use ruff to check and try to fix the lint, dependency issues in the given root path
+    Args:
+        root_path (`str`):
+            The root path of the project to check and fix.
+    """
+    try:
+        # Run ruff fix command
+        result = subprocess.run(
+            ["ruff", "check", root_path, "--fix"],
+            capture_output=True,
+            text=True
+        )
+        print(result.stdout)
+
+        if result.returncode == 0:
+            return ToolResponse(
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=f"Ruff fix completed successfully for project at '{root_path}'."
+                    ),
+                ],
+            )
+        else:
+            return ToolResponse(
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=f"Ruff fix encountered issues:\n{result.stdout}\n{result.stderr}"
+                    ),
+                ],
+            )
+    except Exception as e:
+        return ToolResponse(
+            content=[
+                TextBlock(
+                    type="text",
+                    text=f"An error occurred while running ruff fix: {e}"
+                ),
+            ],
+        )
+
+
+
+def dependency_check_fix_per_file(root_path: str, max_depth: Optional[int] = None, respect_gitignore: bool = True) -> ToolResponse:
     """
     Use ruff to check for missing imports and fix them.
     """
@@ -65,7 +110,6 @@ def dependency_check_fix(root_path: str, max_depth: Optional[int] = None, respec
     for idx, (file, issues) in enumerate(py_ruff_check.items()):
         issue_text += f"Issue {idx + 1}: {issues}"
         issue_text += segment_line
-    print(issue_text)
     return ToolResponse(
             content=[
                 TextBlock(
@@ -82,14 +126,17 @@ if __name__ == "__main__":
     parser.add_argument("--respect_gitignore", type=bool, default=False, help="Respect .gitignore patterns")
 
     args = parser.parse_args()
-    args.root_path = "/Users/dinghaoxue/Projects/hello-agentscope/.tmp_cache/.pipes/saliency_service"
+    args.root_path = "/.tmp_cache/.pipes/saliency_service_bk_1122"
 
 
-    dependency_check_fix(
-        root_path=args.root_path,
-        max_depth=args.max_depth,
-        respect_gitignore=args.respect_gitignore
-    )
+    # dependency_check_fix_per_file(
+    #     root_path=args.root_path,
+    #     max_depth=args.max_depth,
+    #     respect_gitignore=args.respect_gitignore
+    # )
+
+    args.root_path = "/Users/dinghaoxue/Projects/hello-agentscope/.ml_pipes/saliency_model"
+    py_ruff_fix(args.root_path)
 
     # print("Success:", result.success)
     # print("Message:", result.message.content)
