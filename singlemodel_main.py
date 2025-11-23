@@ -26,7 +26,7 @@ def build_toolkit() -> Toolkit:
     return toolkit
 
 
-async def main(configs):
+async def main(configs: Config):
     toolkit = build_toolkit()
     logger = get_logger(__name__, level=os.getenv("LOG_LEVEL", "INFO"))
     logger.info("Agent refactor run starting")
@@ -73,7 +73,7 @@ async def main(configs):
         content=f"""Hi! Your task is to:
         1. Use "load_file_tree" tool to get the file tree of the AI model code at `{configs.input_path}`. Args of the tool: root_path=`{configs.input_path}`.
         2. View all files obtained in step 1 using "view_text_file" tool as needed to understand the code structure and functionality.
-        3. Analyze the the code information you obtained and refactor the code into multiple functional python files as needed for k8s deployment. An entry `app.py` file should be created to run the model. The refactored code should be saved at `{configs.output_path}` using "write_text_file" tool as needed.
+        3. Analyze the the code information you obtained and refactor the code into multiple functional python files as needed for k8s deployment. An entry `app.py` file should be created to run the model. A dependency file `requirements.txt` should be generated. The refactored code should be saved at `{configs.output_path}` using "write_text_file" tool as needed.
         4. Use "py_ruff_fix" tool to fix any linting or dependency issues for the obtained refactored codes in `{configs.output_path}`. Args of the tool: root_path=`{configs.output_path}`.
         5. Fix the issues found in step 4 using "write_text_file" tool as needed.
         """,
@@ -85,6 +85,15 @@ async def main(configs):
 
     return
 
+async def devops_main(configs: Config):
+    from agents.DevopsAgent import create_devops_agent, example_msg
+    logger = get_logger(__name__, level=os.getenv("LOG_LEVEL", "INFO"))
+    logger.info("Devops Agent Starting")
+    devops_agent = create_devops_agent(configs)
+    devops_msg = example_msg(configs)
+    await devops_agent(devops_msg)
+    logger.info("Devops Agent Complete")
+    return
 
 if __name__ == "__main__":
     # init argparse
@@ -108,6 +117,7 @@ if __name__ == "__main__":
     app_logger.info("Output path: %s", configs.output_path)
     try:
         asyncio.run(main(configs))
+        # asyncio.run(devops_main(configs))
     except Exception:
         app_logger.exception("Unhandled exception in main run")
         raise
