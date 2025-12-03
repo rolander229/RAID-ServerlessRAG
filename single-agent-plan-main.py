@@ -117,14 +117,19 @@ if __name__ == "__main__":
     parser.add_argument("--input_path", type=str, required=False, help="Father path of the AI model code to be refactored")
     parser.add_argument("--model_name", type=str, required=False, help="Name of the AI model to be refactored", default="saliency")
     parser.add_argument("--backbone", type=str, required=False, help="Backbone of Agent Model", default="qwen-max")
+    parser.add_argument("--username", type=str, required=False, help="Username of the docker(harbor) registry", default="user-xuedh25")
+
     args = parser.parse_args()
 
-    workdir = "/Users/dinghaoxue/Projects/hello-agentscope/.tmp_cache/.pipes"
-    model_name = "saliency"
-    args.input_path = workdir
-    args.model_name = model_name
+    # workdir = "/Users/dinghaoxue/Projects/hello-agentscope/.tmp_cache/.pipes"
+    # model_name = "saliency"
 
-    configs = Config(args.input_path, args.model_name, args.backbone)
+    # workdir = "/Users/dinghaoxue/Projects/hello-agentscope/examples/"
+    # model_name = "saliency"
+    # args.input_path = workdir
+    # args.model_name = model_name
+
+    configs = Config(args.input_path, args.model_name, args.backbone, args.username)
 
     plan_notebook = PlanNotebook()
     asyncio.run(main(configs, plan_notebook))

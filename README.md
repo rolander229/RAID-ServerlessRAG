@@ -1,5 +1,34 @@
 # ModelDeployAgent
-## Tools
+## QuickStart
+- Add a new model for refactoring
+```bash
+cd ./examples/
+mkdir <new_model_name>
+# copy model files to the new folder
+```
+- Run a simple `ReAct` agent with tool use capability
+```bash
+python single-agent-react-main.py --input_path <model_folder_path> --model_name <model_folder_name> --backbone <agent_backbone_name>
+```
+- (Or) Run a simple `Plan` agent with tool use capability
+```bash
+python single-agent-plan-main.py --input_path <model_folder_path> --model_name <model_folder_name> --backbone <agent_backbone_name>
+```
+- Check the refactored model, deploy the service
+```bash
+cd ./examples/<model_folder_name>_service/
+# deploy
+bash deploy.sh
+# undeploy
+bash undeploy.sh
+```
+## Others
+### Select Models
+- Monolithic Simple Models
+  - [CLIP-based Figure Saliency]()
+- Monolithic Advanced Models
+  - [Music Generation](https://github.com/ace-step/ACE-Step)
+### Tools
 - use `uv` to manage dependencies
 - use `ruff` to check code style and fix simple issues
 - Initial idea for tool building
@@ -8,7 +37,7 @@
   - build another `ToolDependencyAnalysis.py` to analyze the code module dependency structure
   - it is better to get `.json` format graph data for agent analysis
 
-## Agent Roles
+### Agent Roles
 - React agent
   - The core for "Think-Act".
   - Responsible for decomposing tasks, planning actions, and executing tools.
@@ -16,11 +45,11 @@
   - Interface between the user and the React agent.
   - Receives user input and conveys it to the React agent.
 
-## Formatter
+### Formatter
 - `DashScopeChatFormatter`: user-agent conversation formatter
 - `DashScopeMultiAgentFormatter`: (collect) multi-agent conversation formatter
 
-## Workflow
+### Workflow
 - Conversation
   - User-Assistant interaction 
   - Multi-agent conversation
@@ -36,7 +65,7 @@
 - Handsoff
   - ![handsoff-fig](res/hands-off-img.png)
 
-## Agent Components
+### Agent Components
 - Memory
   - you can add/delete `Msg` memory for an agent
 - Memory Pattern

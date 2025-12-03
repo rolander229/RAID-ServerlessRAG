@@ -3,7 +3,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 class Config:
-    def __init__(self, workdir: str = PROJECT_ROOT, model_name: str = 'model', backbone: str = 'qwen-max'):
+    def __init__(self, workdir: str = PROJECT_ROOT, model_name: str = 'model', backbone: str = 'qwen-max', harbor_username: str ='user-xuedh25'):
         assert backbone in ['qwen-max', 'qwen3-max', 'qwen-plus']
         self.backbone = backbone
         self.input_path = os.path.join(workdir, model_name)
@@ -18,7 +18,7 @@ class Config:
         """
         Config for single model deployment
         """
-        self.remote_docker_registry = "gpu-harbor.act.buaa.edu.cn/user-xuedh25/"
+        self.remote_docker_registry = f"gpu-harbor.act.buaa.edu.cn/{harbor_username}/"
         self.dockerfile_name = "Dockerfile"
         self.requirements_name = "requirements.txt"
         self.k8s_yaml_name = "deployment.yaml"

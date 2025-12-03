@@ -1,0 +1,6 @@
+flask
+pillow
+numpy
+transformers
+matplotlib
+python-multipart

@@ -1,2 +1,0 @@
-import asyncio
-from agentscope.token import HuggingFaceTokenCounter

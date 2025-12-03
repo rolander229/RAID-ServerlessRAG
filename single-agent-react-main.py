@@ -99,16 +99,17 @@ if __name__ == "__main__":
     # init argparse
     parser = argparse.ArgumentParser(description="AI Model Code Refactoring Agent")
     parser.add_argument("--input_path", type=str, required=False, help="Father path of the AI model code to be refactored")
-    parser.add_argument("--model_name", type=str, required=False, help="Name of the AI model to be refactored", default="saliency")
+    parser.add_argument("--model_name", type=str, required=False, help="Name of the AI model to be refactored, also the folder name of the refactored code", default="saliency")
     parser.add_argument("--backbone", type=str, required=False, help="Backbone of Agent Model", default="qwen-max")
+    parser.add_argument("--username", type=str, required=False, help="Username of the docker(harbor) registry", default="user-xuedh25")
     args = parser.parse_args()
 
-    workdir = "/Users/dinghaoxue/Projects/hello-agentscope/.tmp_cache/.pipes"
-    model_name = "saliency"
-    args.input_path = workdir
-    args.model_name = model_name
+    # workdir = "/Users/dinghaoxue/Projects/hello-agentscope/examples/"
+    # model_name = "saliency"
+    # args.input_path = workdir
+    # args.model_name = model_name
 
-    configs = Config(args.input_path, args.model_name, args.backbone)
+    configs = Config(args.input_path, args.model_name, args.backbone, args.username)
 
     # configure top-level logger for the run
     app_logger = get_logger("singlemodel_main", level=os.getenv("LOG_LEVEL", "INFO"))

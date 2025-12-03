@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saliency-service
+  labels:
+    app: saliency-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saliency-service
+  template:
+    metadata:
+      labels:
+        app: saliency-service
+    spec:
+      nodeName: "dell-65"
+      containers:
+      - name: saliency-container
+        image: gpu-harbor.act.buaa.edu.cn/user-xuedh25/saliency-service:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        resources:
+          limits:
+            cpu: "32"
+            memory: "64Gi"
+          requests:
+            cpu: "16"
+            memory: "32Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saliency-service
+  labels:
+    app: saliency-service
+spec:
+  type: NodePort
+  ports:
+  - port: 5000
+    targetPort: 5000
+    nodePort: 30080
+  selector:
+    app: saliency-service
