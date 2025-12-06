@@ -1,0 +1,47 @@
+## Design Philosophy
+- Refer to InferLine(SoCC'20)
+  - Queue Delays
+    - Multiple Model on different devices/nodes may require different processing time
+    - Profiler、Estimator、Planner
+  - Pipeline Models (Online Serving)
+    - Batch size, sequence length, etc.
+    - Hardware
+- Online Profiling
+  - Model/Pipelien Throughput varies with different input requests (batch size, sequence length, etc.)
+- Why use local model instead of using API directly?
+  - Cost Saving
+    - Avoid high API call costs by running models locally
+  - Latency Reduction
+    - Reduce response time by eliminating network delays
+  - Data Privacy (According to Alibaba Cloud)
+    - Keep sensitive data on-premises instead of sending it to third-party APIs
+  - Customization
+    - Tailor models to specific needs and fine-tune them as required
+### Full Process
+- Low-freq Planning
+  - **Profiler**
+    - Profile each func with corresponding data
+    - The Profiler captures model throughput as a function of hardware type and batch size to create per-model performance profiles (only one profiling for each model per hardware type is needed)
+    - Factor for horizontally scaling (i.e., replication) is also considered in the profiling process (vertical scaling means more powerful hardware)
+  - **Estimator**
+    - The Estimator is responsible for rapidly estimating the end-to-end latency of a given pipeline configuration for the sample query trace
+    - INPUT: pipeline configuration, individual model profiles, and a sample query trace
+    - Maintains a global logical clock
+    - Estimator can largely save time
+    - Estimator simulates the deterministic behavior of queries flowing through a centralized batched queueing system
+  - **Planner**
+    - Planning algorithm is an iterative constrained optimization procedure that greedily minimizes cost while ensuring that the latency constraint is satisfied
+    - Phase1: find initial config to satisfy SLO
+    - Phase2: Greedily modify the current config to reduce the cost while using the Estimator to identify and reject configurations that violate the latency SLO
+  - Planner & Estimator: After the initial configuration is generated and the pipeline is deployed to serve live traffic, the Planner is re-run periodically (hours to days) on the most recent arrival history to find a cost-optimal configuration for the current workload
+- High-freq Planning
+  - Low-freq planning is for sampling workload. High-freq planning targets on real dynamic workload.
+  - Tuner: monitor the dynamic behavior of the arrival process to adjust per-model replication factors and maintain high SLO attainment at low cost.
+    - Detect changes in the arrival workload dynamics across multiple timescales
+      - current request workload exceeds the sample workload
+      - traffic envelope
+    - Scaling Up
+    - Scaling Down
+
+### Inferline Drawbacks
+- Communication Latency (Inter-Node & Intra-Node)
