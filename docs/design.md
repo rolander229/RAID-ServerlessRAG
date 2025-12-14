@@ -42,6 +42,12 @@
       - traffic envelope
     - Scaling Up
     - Scaling Down
+### Experiment
+- Measurements
+  - Cost (vs Coarse-Grained Mean Provisioning, Coarse-Grained Peak Provisioning)
+  - SLO Attainment (vs Coarse-Grained Mean Provisioning, Coarse-Grained Peak Provisioning)
 
 ### Inferline Drawbacks
 - Communication Latency (Inter-Node & Intra-Node)
+  - This paper somehow ignores the communication latency between different nodes and even different devices within a node.
+- Overhead for Estimator & Planner, configuration switch
