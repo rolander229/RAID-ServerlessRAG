@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mamba-pod
+spec:
+  nodeName: "dell-65"
+  containers:
+  - name: mamba-container
+    image: gpu-harbor.act.buaa.edu.cn/user-xuedh25/mamba_small:latest

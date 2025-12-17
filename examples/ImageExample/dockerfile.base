@@ -1,0 +1,25 @@
+# explicit platform reduces ambiguity during cross-builds
+FROM condaforge/miniforge3:25.11.0-0
+
+USER root
+
+# copy .condarc to root and system conda prefix so conda/mamba use Tsinghua mirrors
+COPY .condarc /root/.condarc
+
+RUN mkdir -p /opt/conda && cp /root/.condarc /opt/conda/.condarc || true
+
+# create a small env named myenv with python and pip using mamba (fast)
+# RUN mamba create -y -n myenv -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge \
+#     python=3.11 pip && \
+#     conda clean -afy
+
+# make default env available on PATH
+# ENV CONDA_PREFIX=/opt/conda/envs/myenv
+# ENV PATH=$CONDA_PREFIX/bin:$PATH
+
+# optional: add a non-root user for better security
+# RUN useradd -m -s /bin/bash appuser && \
+#     chown -R appuser:appuser /opt/conda
+
+# USER appuser
+# WORKDIR /home/appuser
