@@ -26,3 +26,17 @@ def devops_msg(configs: Config) -> str:
         """
         # TODO:
         # Devops prompt add some fault tolerance instructions for bash scripts, dockerfile and k8s yaml creation.
+
+
+def refactor_msg_v2(configs: Config) -> str:
+    # This is an improved version of refactor_msg with DAG generation step added.
+    # TODO: the DAG part should be fixed
+    return f"""
+    Hi! Your task is to:
+    1. Use "load_file_tree" tool to get the file tree of the AI pipeline code at `{configs.input_path}`. Args of the tool: root_path=`{configs.input_path}`.
+    2. View all files obtained in step 1 using "view_text_file" tool as needed to understand the code structure and functions in each file. 
+    3. Based on the code structure and functions you obtained in step 2, refactor the code into multiple functional python files as needed for k8s deployment. Each functional module should be in a separate python file. An entry `app.py` file should be created to run the pipeline with Flask framework. A dependency file `requirements.txt` should be generated. The refactored code should be saved at `{configs.output_path}` using "write_text_file" tool as needed.
+    4. Further generate a DAG file at `{configs.dag_output_path}` to orchestrate the refactored functional modules for the AI pipeline. The DAG should define the execution order and dependencies among the functional modules. Use "write_text_file" tool to save the DAG file.
+    5. Use "py_ruff_fix" tool to fix any linting or dependency issues for the obtained refactored codes in `{configs.output_path}`. Args of the tool: root_path=`{configs.output_path}`.
+    6. Fix the issues found in step 5 using "write_text_file" tool as needed.
+    """
