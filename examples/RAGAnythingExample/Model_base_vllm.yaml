@@ -98,6 +98,8 @@ spec:
         - "$(DOWNLOAD_DIR)"
         - "--dtype"
         - "$(DTYPE)"
+        - "--worker-use-ray"
+        - "false"
         - "--trust-remote-code"
         ports:
         - containerPort: 8000
@@ -185,11 +187,8 @@ spec:
         resources:
           limits:
             nvidia.com/gpu: 1
-            memory: "8Gi"
-            cpu: "4"
           requests:
-            memory: "4Gi"
-            cpu: "2"
+            nvidia.com/gpu: 1
         volumeMounts:
         - name: model-storage
           mountPath: /root/.cache/huggingface
