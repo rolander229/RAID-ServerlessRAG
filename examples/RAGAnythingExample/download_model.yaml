@@ -1,0 +1,151 @@
+# download-model-job.yaml
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-model-job
+  labels:
+    app: model-downloader
+spec:
+  template:
+    metadata:
+      labels:
+        app: model-downloader
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      nodeName: dell-65
+      restartPolicy: Never
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: vllm-model-pvc
+      containers:
+      - name: downloader
+        image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "========================================"
+          echo "模型下载任务启动"
+          echo "========================================"
+          
+          # 环境变量
+          HF_ENDPOINT=${HF_ENDPOINT:-"https://hf-mirror.com"}
+          MODEL_NAME=${MODEL_NAME}
+          HF_HOME=${HF_HOME:-"/root/.cache/huggingface"}
+          DOWNLOAD_DIR=${DOWNLOAD_DIR:-"$HF_HOME/hub"}
+          
+          echo "配置信息:"
+          echo "- 模型名称: $MODEL_NAME"
+          echo "- 镜像源: $HF_ENDPOINT"
+          echo "- 下载目录: $DOWNLOAD_DIR"
+          echo "- 缓存目录: $HF_HOME"
+          
+          # 检查模型是否已存在
+          MODEL_DIR_NAME="models--$(echo $MODEL_NAME | sed 's|/|--|g')"
+          MODEL_DIR="$DOWNLOAD_DIR/$MODEL_DIR_NAME"
+          echo "检查模型目录: $MODEL_DIR"
+          
+          if [ -d "$MODEL_DIR" ] && [ -f "$MODEL_DIR/refs" ]; then
+            echo "✓ 模型已存在且下载完成"
+            echo "  如需重新下载，请先删除目录: $MODEL_DIR"
+            exit 0
+          fi
+          
+          # 设置环境变量（通过环境变量传递endpoint）
+          export HF_ENDPOINT="$HF_ENDPOINT"
+          export HF_HOME="$HF_HOME"
+          export HF_TOKEN="$HF_TOKEN"
+          
+          # 创建目录
+          mkdir -p "$DOWNLOAD_DIR"
+          
+          # 下载模型
+          echo "开始下载模型..."
+          echo "使用命令: huggingface-cli download $MODEL_NAME --local-dir $DOWNLOAD_DIR --local-dir-use-symlinks False"
+          
+          # 使用huggingface-cli下载（HF_ENDPOINT通过环境变量传递）
+          echo "使用方法: snapshot_download"
+          python3 -c "
+          from huggingface_hub import snapshot_download
+          import os
+
+          model_name = os.environ['MODEL_NAME']
+          cache_dir = os.environ['HF_HOME']
+          local_dir = os.environ['DOWNLOAD_DIR']
+
+          print(f'下载模型: {model_name}')
+          print(f'缓存目录: {cache_dir}')
+          print(f'本地目录: {local_dir}')
+
+          # 确保下载到正确的目录结构
+          snapshot_download(
+              repo_id=model_name,
+              cache_dir=cache_dir,
+              local_dir=local_dir,
+              local_dir_use_symlinks=False,
+              resume_download=True
+          )
+          print('下载完成')
+          "
+          
+          # 验证下载
+          if [ $? -eq 0 ]; then
+            echo "========================================"
+            echo "✓ 模型下载成功!"
+            echo "========================================"
+            
+            # 列出主要文件
+            echo "模型下载到: $MODEL_DIR"
+            echo "目录内容:"
+            ls -la "$MODEL_DIR/"
+
+            # 检查是否有snapshots目录
+            if [ -d "$MODEL_DIR/snapshots" ]; then
+              echo -e "\nSnapshots目录内容:"
+              ls -la "$MODEL_DIR/snapshots/"
+              LATEST_SNAPSHOT=$(ls -td "$MODEL_DIR/snapshots"/*/ | head -1)
+              echo -e "\n最新snapshot中的文件:"
+              find "$LATEST_SNAPSHOT" -type f | head -20
+            fi
+            
+            # 计算模型大小
+            echo -e "\n模型大小统计:"
+            du -sh "$MODEL_DIR"
+          else
+            echo "❌ 模型下载失败!"
+            exit 1
+          fi
+          
+          echo "========================================"
+          echo "任务完成"
+          echo "========================================"
+        
+        # ============== 只需修改这里的模型名称 ==============
+        env:
+        - name: MODEL_NAME
+          value: "Qwen/Qwen3-Embedding-0.6B"  # <--- 修改这里为你要下载的模型
+        # =================================================
+        
+        - name: HF_ENDPOINT
+          value: "https://hf-mirror.com"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vllm-secrets
+              key: hf-token
+        - name: HF_HOME
+          value: "/root/.cache/huggingface"
+        - name: DOWNLOAD_DIR
+          value: "/root/.cache/huggingface/hub"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /root/.cache/huggingface
+          subPath: huggingface
+        resources:
+          limits:
+            nvidia.com/gpu: 1 
+          requests:
+            nvidia.com/gpu: 1
