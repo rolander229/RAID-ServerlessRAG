@@ -1,0 +1,209 @@
+---
+# 1. ConfigMap for vLLM configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vllm-config
+  labels:
+    app: vllm
+data:
+  model: "Qwen/Qwen3-1.7B"  # 使用 Qwen3-1.7B 模型
+  port: "8000"
+  served-model-name: "qwen3-1.7b"
+  host: "0.0.0.0"
+  max-model-len: "4096"
+  tensor-parallel-size: "1"
+  gpu-memory-utilization: "0.9"
+  max-num-seqs: "256"
+  download-dir: "/root/.cache/huggingface/hub"
+---
+# 2. Secret for API key (safer storage)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vllm-secrets
+  labels:
+    app: vllm
+type: Opaque
+stringData:
+  api-key: "sk-vllm-api-key-123456"  # 你的 API key
+---
+# 3. PersistentVolumeClaim for model cache
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-model-pvc
+  labels:
+    app: vllm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+# 4. Deployment for vLLM server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-deployment
+  labels:
+    app: vllm
+    component: model-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+      component: model-server
+  template:
+    metadata:
+      labels:
+        app: vllm
+        component: model-server
+    spec:
+      containers:
+      - name: vllm-container
+        image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
+        command: ["python", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+        - "--model"
+        - "$(MODEL)"
+        - "--host"
+        - "$(HOST)"
+        - "--port"
+        - "$(PORT)"
+        - "--api-key"
+        - "$(API_KEY)"
+        - "--served-model-name"
+        - "$(SERVED_MODEL_NAME)"
+        - "--max-model-len"
+        - "$(MAX_MODEL_LEN)"
+        - "--tensor-parallel-size"
+        - "$(TENSOR_PARALLEL_SIZE)"
+        - "--gpu-memory-utilization"
+        - "$(GPU_MEMORY_UTILIZATION)"
+        - "--max-num-seqs"
+        - "$(MAX_NUM_SEQS)"
+        - "--download-dir"
+        - "$(DOWNLOAD_DIR)"
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: model
+        - name: HOST
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: host
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: port
+        - name: SERVED_MODEL_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: served-model-name
+        - name: MAX_MODEL_LEN
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: max-model-len
+        - name: TENSOR_PARALLEL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: tensor-parallel-size
+        - name: GPU_MEMORY_UTILIZATION
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: gpu-memory-utilization
+        - name: MAX_NUM_SEQS
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: max-num-seqs
+        - name: DOWNLOAD_DIR
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: download-dir
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vllm-secrets
+              key: api-key
+        resources:
+          limits:
+            nvidia.com/gpu: 1  # 请求 GPU 资源
+            memory: "8Gi"
+            cpu: "4"
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /root/.cache/huggingface
+          subPath: huggingface
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: vllm-model-pvc
+---
+# 5. Service for vLLM
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  labels:
+    app: vllm
+    component: model-service
+spec:
+  selector:
+    app: vllm
+    component: model-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+    protocol: TCP
+  type: ClusterIP
+---
+# 6. Optional: NodePort service for external access (if needed)
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-nodeport
+  labels:
+    app: vllm
+    component: nodeport-service
+spec:
+  selector:
+    app: vllm
+    component: model-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 30100
+  type: NodePort
