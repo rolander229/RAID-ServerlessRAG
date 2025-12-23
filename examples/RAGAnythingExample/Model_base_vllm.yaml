@@ -1,3 +1,4 @@
+# template: vllm-modelserver | 更换部署模型时需要修改注释项
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -6,9 +7,9 @@ metadata:
   labels:
     app: vllm
 data:
-  model: "Qwen/Qwen3-1.7B"
-  port: "8000"
-  served-model-name: "qwen3-1.7b"
+  model: "Qwen/Qwen3-1.7B" # 模型名称或路径
+  port: "8000" # 监听端口
+  served-model-name: "qwen3-1.7b" # 对外提供的模型名称
   host: "0.0.0.0"
   max-model-len: "4096"
   tensor-parallel-size: "1"
@@ -26,8 +27,8 @@ metadata:
     app: vllm
 type: Opaque
 stringData:
-  api-key: "sk-vllm-api-key-123456"
-  hf-token: "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"
+  api-key: "sk-vllm-api-key-123456" # VLLM API Key
+  hf-token: "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" # 可以换成自己的Hugging Face Token
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -73,7 +74,7 @@ spec:
           medium: Memory
       containers:
       - name: vllm-container
-        image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
+        image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma # 这是亦龙师兄的那个vllm:0.8.5+cuda镜像
         command: ["python", "-m", "vllm.entrypoints.openai.api_server"]
         args:
         - "--model"
@@ -102,7 +103,7 @@ spec:
         - "false"
         - "--trust-remote-code"
         ports:
-        - containerPort: 8000
+        - containerPort: 8000 # 容器端口
           name: http
           protocol: TCP
         env:
@@ -195,18 +196,6 @@ spec:
           subPath: huggingface
         - name: dshm
           mountPath: /dev/shm
-        # readinessProbe:
-        #   httpGet:
-        #     path: /health
-        #     port: 8000
-        #   initialDelaySeconds: 120
-        #   periodSeconds: 10
-        # livenessProbe:
-        #   httpGet:
-        #     path: /health
-        #     port: 8000
-        #   initialDelaySeconds: 300
-        #   periodSeconds: 30
 ---
 apiVersion: v1
 kind: Service
@@ -220,8 +209,8 @@ spec:
     app: vllm
     component: model-server
   ports:
-  - port: 8000
-    targetPort: 8000
+  - port: 8000 # 服务端口
+    targetPort: 8000 # 容器端口
     name: http
     protocol: TCP
   type: ClusterIP
@@ -238,7 +227,7 @@ spec:
     app: vllm
     component: model-server
   ports:
-  - port: 8000
-    targetPort: 8000
-    nodePort: 30100
+  - port: 8000 # 服务端口
+    targetPort: 8000 # 容器端口
+    nodePort: 30100 # 指定节点端口
   type: NodePort

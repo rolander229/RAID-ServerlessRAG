@@ -23,7 +23,7 @@ response = client.chat.completions.create(
         {"role": "system", "content": "你是一个有帮助的助手"},
         {"role": "user", "content": "请用中文写一个简短的自我介绍"}
     ],
-    max_tokens=100,
+    max_tokens=1024,
     temperature=0.7
 )
 
