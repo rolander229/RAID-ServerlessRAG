@@ -1,5 +1,4 @@
 ---
-# 1. ConfigMap for vLLM configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,7 +6,7 @@ metadata:
   labels:
     app: vllm
 data:
-  model: "Qwen/Qwen3-1.7B"  # 使用 Qwen3-1.7B 模型
+  model: "Qwen/Qwen3-1.7B"
   port: "8000"
   served-model-name: "qwen3-1.7b"
   host: "0.0.0.0"
@@ -16,8 +15,9 @@ data:
   gpu-memory-utilization: "0.9"
   max-num-seqs: "256"
   download-dir: "/root/.cache/huggingface/hub"
+  hf-endpoint: "https://hf-mirror.com"
+  dtype: "float16"
 ---
-# 2. Secret for API key (safer storage)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -26,9 +26,9 @@ metadata:
     app: vllm
 type: Opaque
 stringData:
-  api-key: "sk-vllm-api-key-123456"  # 你的 API key
+  api-key: "sk-vllm-api-key-123456"
+  hf-token: "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"
 ---
-# 3. PersistentVolumeClaim for model cache
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -42,7 +42,6 @@ spec:
     requests:
       storage: 50Gi
 ---
-# 4. Deployment for vLLM server
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -61,7 +60,17 @@ spec:
       labels:
         app: vllm
         component: model-server
+      annotations:
+        sidecar.istio.io/inject: "false"
     spec:
+      nodeName: dell-65
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: vllm-model-pvc
+      - name: dshm
+        emptyDir:
+          medium: Memory
       containers:
       - name: vllm-container
         image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
@@ -87,6 +96,9 @@ spec:
         - "$(MAX_NUM_SEQS)"
         - "--download-dir"
         - "$(DOWNLOAD_DIR)"
+        - "--dtype"
+        - "$(DTYPE)"
+        - "--trust-remote-code"
         ports:
         - containerPort: 8000
           name: http
@@ -137,14 +149,42 @@ spec:
             configMapKeyRef:
               name: vllm-config
               key: download-dir
+        - name: DTYPE
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: dtype
         - name: API_KEY
           valueFrom:
             secretKeyRef:
               name: vllm-secrets
               key: api-key
+        - name: HF_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: vllm-config
+              key: hf-endpoint
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vllm-secrets
+              key: hf-token
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vllm-secrets
+              key: hf-token
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "1"
+        - name: CUDA_LAUNCH_BLOCKING
+          value: "1"
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: "spawn"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
         resources:
           limits:
-            nvidia.com/gpu: 1  # 请求 GPU 资源
+            nvidia.com/gpu: 1
             memory: "8Gi"
             cpu: "4"
           requests:
@@ -154,24 +194,21 @@ spec:
         - name: model-storage
           mountPath: /root/.cache/huggingface
           subPath: huggingface
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 60
-          periodSeconds: 30
-      volumes:
-      - name: model-storage
-        persistentVolumeClaim:
-          claimName: vllm-model-pvc
+        - name: dshm
+          mountPath: /dev/shm
+        # readinessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8000
+        #   initialDelaySeconds: 120
+        #   periodSeconds: 10
+        # livenessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8000
+        #   initialDelaySeconds: 300
+        #   periodSeconds: 30
 ---
-# 5. Service for vLLM
 apiVersion: v1
 kind: Service
 metadata:
@@ -190,7 +227,6 @@ spec:
     protocol: TCP
   type: ClusterIP
 ---
-# 6. Optional: NodePort service for external access (if needed)
 apiVersion: v1
 kind: Service
 metadata:
