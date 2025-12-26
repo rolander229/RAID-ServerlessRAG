@@ -1,5 +1,5 @@
 {
     "llm_model_func": "Qwen/Qwen3-1.7B",
-    "vision_model_func": "Qwen/Qwen3-VL-2B-Instruct",
+    "vision_model_func": "Qwen/Qwen2-VL-2B",
     "EmbeddingFunc": "Qwen/Qwen3-Embedding-0.6B"
 }
