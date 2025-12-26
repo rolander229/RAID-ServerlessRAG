@@ -19,7 +19,7 @@ spec:
       volumes:
       - name: model-storage
         persistentVolumeClaim:
-          claimName: vllm-model-pvc
+          claimName: model-storage
       containers:
       - name: downloader
         image: gpu-harbor.act.buaa.edu.cn/user-liyilong/envd-vllm:0.8.5-cu12.6-rdma
@@ -58,13 +58,14 @@ spec:
           export HF_ENDPOINT="$HF_ENDPOINT"
           export HF_HOME="$HF_HOME"
           export HF_TOKEN="$HF_TOKEN"
+          export MODEL_DIR="$MODEL_DIR"
           
           # 创建目录
           mkdir -p "$DOWNLOAD_DIR"
           
           # 下载模型
           echo "开始下载模型..."
-          echo "使用命令: huggingface-cli download $MODEL_NAME --local-dir $DOWNLOAD_DIR --local-dir-use-symlinks False"
+          echo "使用命令: huggingface-cli download $MODEL_NAME --local-dir $MODEL_DIR --local-dir-use-symlinks False"
           
           # 使用huggingface-cli下载（HF_ENDPOINT通过环境变量传递）
           echo "使用方法: snapshot_download"
@@ -74,7 +75,7 @@ spec:
 
           model_name = os.environ['MODEL_NAME']
           cache_dir = os.environ['HF_HOME']
-          local_dir = os.environ['DOWNLOAD_DIR']
+          local_dir = os.environ['MODEL_DIR']
 
           print(f'下载模型: {model_name}')
           print(f'缓存目录: {cache_dir}')
@@ -126,7 +127,7 @@ spec:
         # ============== 只需修改这里的模型名称 ==============
         env:
         - name: MODEL_NAME
-          value: "Qwen/Qwen3-Embedding-0.6B"  # <--- 修改这里为你要下载的模型
+          value: "Qwen/Qwen3-VL-2B-Instruct"  # <--- 修改这里为你要下载的模型
         # =================================================
         
         - name: HF_ENDPOINT

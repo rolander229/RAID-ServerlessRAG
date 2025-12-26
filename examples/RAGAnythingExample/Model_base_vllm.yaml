@@ -30,19 +30,6 @@ stringData:
   api-key: "sk-vllm-api-key-123456" # VLLM API Key
   hf-token: "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" # 可以换成自己的Hugging Face Token
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: vllm-model-pvc
-  labels:
-    app: vllm
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 50Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,7 +55,7 @@ spec:
       volumes:
       - name: model-storage
         persistentVolumeClaim:
-          claimName: vllm-model-pvc
+          claimName: model-storage
       - name: dshm
         emptyDir:
           medium: Memory
@@ -99,8 +86,6 @@ spec:
         - "$(DOWNLOAD_DIR)"
         - "--dtype"
         - "$(DTYPE)"
-        - "--worker-use-ray"
-        - "false"
         - "--trust-remote-code"
         ports:
         - containerPort: 8000 # 容器端口
