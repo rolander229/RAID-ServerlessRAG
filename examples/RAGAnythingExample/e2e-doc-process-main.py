@@ -5,8 +5,11 @@ from lightrag.utils import EmbeddingFunc
 
 async def main():
     # Set up API configuration
-    api_key = "your-api-key"
-    base_url = "your-base-url"  # Optional
+    api_key = "sk-vllm-api-key-123456"
+    base_url = "http://192.168.5.65:30101/v1"  # Optional
+    vl_url = "http://192.168.5.65:30102/v1/"
+    emb_url = "http://192.168.5.65:30103/v1"  # Optional
+
 
     # Create RAGAnything configuration
     config = RAGAnythingConfig(
@@ -21,7 +24,7 @@ async def main():
     # Define LLM model function
     def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
         return openai_complete_if_cache(
-            "gpt-4o-mini",
+            "qwen3-1.7b",
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
@@ -37,19 +40,19 @@ async def main():
         # If messages format is provided (for multimodal VLM enhanced query), use it directly
         if messages:
             return openai_complete_if_cache(
-                "gpt-4o",
+                "qwen2-vl-2b",
                 "",
                 system_prompt=None,
                 history_messages=[],
                 messages=messages,
                 api_key=api_key,
-                base_url=base_url,
+                base_url=vl_url,
                 **kwargs,
             )
         # Traditional single image format
         elif image_data:
             return openai_complete_if_cache(
-                "gpt-4o",
+                "qwen2-vl-2b",
                 "",
                 system_prompt=None,
                 history_messages=[],
@@ -73,7 +76,7 @@ async def main():
                     else {"role": "user", "content": prompt},
                 ],
                 api_key=api_key,
-                base_url=base_url,
+                base_url=vl_url,
                 **kwargs,
             )
         # Pure text format
@@ -82,13 +85,13 @@ async def main():
 
     # Define embedding function
     embedding_func = EmbeddingFunc(
-        embedding_dim=3072,
+        embedding_dim=1024,
         max_token_size=8192,
         func=lambda texts: openai_embed(
             texts,
-            model="text-embedding-3-large",
+            model="qwen3-embedding-0.6b",
             api_key=api_key,
-            base_url=base_url,
+            base_url=emb_url,
         ),
     )
 
@@ -102,7 +105,7 @@ async def main():
 
     # Process a document
     await rag.process_document_complete(
-        file_path="path/to/your/document.pdf",
+        file_path="./data/tls-test.pdf",
         output_dir="./output",
         parse_method="auto"
     )
