@@ -5,6 +5,8 @@ cd pgvector
 
 sudo apt update
 sudo apt install build-essential libpq-dev postgresql-server-dev-all
+sudo apt-get install postgresql postgresql-contrib libpq-dev # install postgresql
+
 # or, if you want a specific version (e.g., 15):
 # sudo apt install postgresql-server-dev-15
 
