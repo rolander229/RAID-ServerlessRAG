@@ -1,6 +1,6 @@
 from transformers import AutoConfig, AutoModelForCausalLM
 from accelerate import init_empty_weights
-from extension.config_planner import ModelProfile
+from extension.model_profile import ModelProfile
 
 MEMORY_PER_BILLION_PARAMS = {
     "fp32": 4.0,
