@@ -15,9 +15,13 @@ from Ayo.engines.engine_types import EngineType
 from transformers import AutoConfig, AutoModelForCausalLM
 from accelerate import init_empty_weights
 from sentence_transformers import SentenceTransformer
-from extension.utils import estimate_llm_inference_memory
+from extension.mem_utils.est_embed import estimate_embed_infer_memory
+from extension.mem_utils.est_reranker import estimate_reranker_infer_memory
+from extension.mem_utils.est_llm import estimate_llm_infer_memory
+from extension.mem_utils.known_models import KNOWN_MODELS_CONFIG
 
-class ModelSize(str, Enum):
+
+class ModelScale(str, Enum):
     """Model size categories"""
     TINY = "tiny"  # < 100M params
     SMALL = "small"  # 100M - 1B params
@@ -76,12 +80,13 @@ class ModelProfile:
     
     model_name: str
     engine_type: EngineType
-    hf_model_path: str = None  # Hugging Face model path for estimation
-    model_size: Optional[ModelSize] = None
+    hf_model_path: Optional[str] = None  # Hugging Face model path for estimation
+    model_size: Optional[float] = None # Model size (GB)
     param_count: Optional[float] = None  # In billions
     embedding_dim: Optional[int] = None  # For embedding models
     context_length: Optional[int] = None  # For LLMs
     estimated_memory_gb: Optional[float] = None  # Estimated memory requirement
+    precision: str = "fp16"  # Model precision for estimation
 
     def dict(self) -> Dict:
         """Convert to dictionary"""
@@ -93,7 +98,8 @@ class ModelProfile:
             "embedding_dim": self.embedding_dim,
             "context_length": self.context_length,
             "estimated_memory_gb": self.estimated_memory_gb,
-            "hf_model_path": self.hf_model_path,
+            "hf_model_path": self.hf_model_path if self.hf_model_path else self.model_name,  # Use model_name as fallback
+            "precision": self.precision,
         }
 
 
@@ -143,61 +149,7 @@ class ConfigPlanner:
     }
     
     # Known model specs
-    KNOWN_MODELS = {
-        "BAAI/bge-small-en-v1.5": {
-            "param_count": 0.033,  # 33M params
-            "embedding_dim": 384,
-            "memory_gb": 0.5,
-        },
-        "BAAI/bge-base-en-v1.5": {
-            "param_count": 0.109,  # 109M params
-            "embedding_dim": 768,
-            "memory_gb": 1.0,
-        },
-        "BAAI/bge-large-en-v1.5": {
-            "param_count": 0.335,  # 335M params
-            "embedding_dim": 1024,
-            "memory_gb": 2.0,
-        },
-        "BAAI/bge-reranker-base": {
-            "param_count": 0.278,  # 278M params
-            "memory_gb": 1.5,
-        },
-        "BAAI/bge-reranker-large": {
-            "param_count": 0.560,  # 560M params
-            "memory_gb": 3.0,
-        },
-        "openai-community/gpt2": {
-            "param_count": 0.124,  # 124M params
-            "context_length": 1024,
-            "memory_gb": 0.5,
-        },
-        "gpt2-medium": {
-            "param_count": 0.355,  # 355M params
-            "context_length": 1024,
-            "memory_gb": 1.5,
-        },
-        "gpt2-large": {
-            "param_count": 0.774,  # 774M params
-            "context_length": 1024,
-            "memory_gb": 3.0,
-        },
-        "gpt2-xl": {
-            "param_count": 1.5,
-            "context_length": 1024,
-            "memory_gb": 6.0,
-        },
-        "meta-llama/Llama-2-7b": {
-            "param_count": 7.0,
-            "context_length": 4096,
-            "memory_gb": 14.0,
-        },
-        "meta-llama/Llama-2-13b": {
-            "param_count": 13.0,
-            "context_length": 4096,
-            "memory_gb": 26.0,
-        },
-    }
+    KNOWN_MODELS = KNOWN_MODELS_CONFIG
     
     def __init__(self):
         """Initialize the config planner"""
@@ -220,7 +172,7 @@ class ConfigPlanner:
         """
         # Check if we have precomputed values
         if model_profile.model_name in self.KNOWN_MODELS:
-            return self.KNOWN_MODELS[model_profile.model_name]["memory_gb"]
+            return self.KNOWN_MODELS[model_profile.model_name]["model_size"]
         
         if model_profile.estimated_memory_gb:
             return model_profile.estimated_memory_gb
@@ -251,6 +203,11 @@ class ConfigPlanner:
     ) -> ResourceEstimation:
         """Estimate resources for embedding models"""
         memory_required = self.estimate_model_memory(model_profile)
+        # try:
+        #     memory_required = estimate_embed_infer_memory(model_profile)
+        # except Exception as e:
+        #     print(f"Error estimating embedder memory: {e}\nFalling back to default model memory estimation.")
+        #     memory_required = self.estimate_model_memory(model_profile)
         
         # Embedders are usually fast, prioritize throughput
         if hardware.total_gpus > 0 and hardware.gpu_memory_gb >= memory_required:
@@ -292,8 +249,12 @@ class ConfigPlanner:
         workload: WorkloadProfile
     ) -> ResourceEstimation:
         """Estimate resources for LLM models"""
-        # memory_required = estimate_llm_inference_memory(model_profile)
         memory_required = self.estimate_model_memory(model_profile)
+        # try:
+        #     memory_required = estimate_llm_infer_memory(model_profile)
+        # except Exception as e:
+        #     print(f"Error estimating LLM memory: {e}\nFalling back to default model memory estimation.")
+        #     memory_required = self.estimate_model_memory(model_profile)
         
         # LLMs require GPU and substantial memory
         if hardware.total_gpus == 0:
@@ -350,6 +311,11 @@ class ConfigPlanner:
     ) -> ResourceEstimation:
         """Estimate resources for reranker models"""
         memory_required = self.estimate_model_memory(model_profile)
+        # try:
+        #     memory_required = estimate_reranker_infer_memory(model_profile)
+        # except Exception as e:
+        #     print(f"Error estimating reranker memory: {e}\nFalling back to default model memory estimation.")
+        #     memory_required = self.estimate_model_memory(model_profile)
         
         # Rerankers process query-document pairs
         if hardware.total_gpus > 0 and hardware.gpu_memory_gb >= memory_required:
