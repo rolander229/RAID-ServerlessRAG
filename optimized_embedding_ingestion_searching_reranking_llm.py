@@ -415,12 +415,14 @@ if __name__ == "__main__":
     from Ayo.opt_pass.decoding_pipeling import LLMDecodingPipeliningPass
     from Ayo.opt_pass.prefilling_split import PrefillingSpiltPass
     from Ayo.opt_pass.pruning_dependency import PruningDependencyPass
+    from Ayo.opt_pass.reranking_decomposition import RerankingDecompositionPass
     from Ayo.opt_pass.stage_decomposition import StageDecompositionPass
 
     dag.optimize(
         [
             PruningDependencyPass(),
             StageDecompositionPass(),
+            RerankingDecompositionPass(num_sub_nodes=2),
             PrefillingSpiltPass(),
             LLMDecodingPipeliningPass(),
         ]
