@@ -16,7 +16,7 @@ from Ayo.queries.query import Query
 default_embed_config = ENGINE_REGISTRY.get_default_config(EngineType.EMBEDDER)
 default_embed_config.update(
     {
-        "model_name": "BAAI/bge-large-en-v1.5",
+        "model_name": "BAAI/bge-small-en-v1.5",
         "max_batch_size": 1024,
     }
 )
@@ -25,7 +25,7 @@ embed_config = EngineConfig(
     name="embedding_service",
     engine_type=EngineType.EMBEDDER,
     resources={},
-    num_gpus=1,
+    num_gpus=0.2,
     num_cpus=1,
     instances=1,
     model_config={**default_embed_config, "device": "cuda"},
@@ -46,7 +46,7 @@ vectordb_config = EngineConfig(
         "user": "asplos25",
         "password": "123456",
         "database": "database_asplos",
-        "vector_dim": 1024,
+        "vector_dim": 384,
         "max_batch_size": 1000,
     },
     latency_profile={"timeout": 60, "batch_wait": 0.05},
@@ -56,11 +56,11 @@ llm_config = EngineConfig(
     name="llm_service",
     engine_type=EngineType.LLM,
     resources={},
-    num_gpus=1,
+    num_gpus=0.6,
     num_cpus=1,
     instances=1,
     model_config={
-        "model_name": "meta-llama/Llama-2-7b-chat-hf",
+        "model_name": "openai-community/gpt2",
         "tensor_parallel_size": 1,
         "max_num_seqs": 256,
         "max_queue_size": 1000,
@@ -76,7 +76,7 @@ llm_config = EngineConfig(
 default_reranker_config = ENGINE_REGISTRY.get_default_config(EngineType.RERANKER)
 default_reranker_config.update(
     {
-        "model_name": "BAAI/bge-reranker-large",
+        "model_name": "BAAI/bge-reranker-base",
         "max_batch_size": 32,
     }
 )
@@ -84,7 +84,7 @@ reranker_config = EngineConfig(
     name="reranker_service",
     engine_type=EngineType.RERANKER,
     resources={},
-    num_gpus=1,
+    num_gpus=0.2,
     num_cpus=1,
     instances=1,
     model_config={**default_reranker_config, "device": "cuda"},
@@ -380,7 +380,7 @@ if __name__ == "__main__":
 
     print(dag.get_full_dag_nodes_info())
 
-    visualize_dag_with_compute_nodes_in_line(
-        dag, "unoptimized_dag_for_embedding_ingestion_search_reranking_llm.png"
-    )
-    # asyncio.run(run_app(dag))
+    # visualize_dag_with_compute_nodes_in_line(
+    #     dag, ".output_cache/no_pd_no_opt.png"
+    # )
+    asyncio.run(run_app(dag))
