@@ -248,7 +248,7 @@ def visualize_dag_with_node_types(
 
     # Save the image with high DPI
     if output_path:
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.savefig(output_path, dpi=200)
 
     return G
 
