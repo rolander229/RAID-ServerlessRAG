@@ -12,6 +12,11 @@ from Ayo.engines.engine_types import ENGINE_REGISTRY, EngineType
 from Ayo.modules.prompt_template import replace_placeholders
 from Ayo.queries.query import Query
 
+import argparse
+import os
+
+from Ayo.vis.vis_graph import visualize_dag_with_compute_nodes_in_line
+
 # Create embedding engine config
 default_embed_config = ENGINE_REGISTRY.get_default_config(EngineType.EMBEDDER)
 default_embed_config.update(
@@ -403,13 +408,25 @@ async def cleanup(app: APP) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run optimized embedding ingestion, searching, reranking, and LLM DAG")
+    # define output_path args
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./.output_cache",
+        help="Directory to save outputs such as DAG visualizations",
+    )
+    args = parser.parse_args()
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    
     from Ayo.vis.vis_graph import visualize_dag_with_node_types
 
     dag = create_base_dag()
 
     print(dag.get_full_dag_nodes_info())
 
-    # visualize_dag_with_node_types(dag, "before_optimize_embedd_ingest_search_reranking.png")
+    visualize_dag_with_compute_nodes_in_line(dag, f"{args.output_dir}/before_optimize_embedd_ingest_search_reranking.png")
 
     # optimize DAG
     from Ayo.opt_pass.decoding_pipeling import LLMDecodingPipeliningPass
@@ -420,11 +437,11 @@ if __name__ == "__main__":
 
     dag.optimize(
         [
-            PruningDependencyPass(),
-            StageDecompositionPass(),
+            # PruningDependencyPass(),
+            # StageDecompositionPass(),
             RerankingDecompositionPass(num_sub_nodes=2),
-            PrefillingSpiltPass(),
-            LLMDecodingPipeliningPass(),
+            # PrefillingSpiltPass(),
+            # LLMDecodingPipeliningPass(),
         ]
     )
 
@@ -433,8 +450,8 @@ if __name__ == "__main__":
 
     dag.set_dag_id("optimized_dag_for_embedding_ingestion_searching_reranking_llm")
 
-    # visualize_dag_with_node_types(
-    #    dag, "optimized_dag_for_embedding_ingestion_searching_reranking_llm.png"
-    # )
+    visualize_dag_with_compute_nodes_in_line(
+       dag, f"{args.output_dir}/optimized_dag_for_embedding_ingestion_searching_reranking_llm.png"
+    )
 
-    asyncio.run(run_app(dag))
+    # asyncio.run(run_app(dag))

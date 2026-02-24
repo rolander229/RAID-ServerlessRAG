@@ -31,3 +31,7 @@ wheels/
 */profiles
 */ray_worker
 .mypy_cache/
+
+.vscode/
+.tmp_cache/
+.output_cache/
