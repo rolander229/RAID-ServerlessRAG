@@ -495,6 +495,7 @@ class LLMTransformer(PayloadTransformer):
                 continue
 
         if node.op_type in [
+            NodeOps.LLM_FULL,
             NodeOps.LLM_PREFILLING,
             NodeOps.LLM_PARTIAL_PREFILLING,
             NodeOps.LLM_FULL_PREFILLING,
@@ -544,6 +545,7 @@ class LLMTransformer(PayloadTransformer):
             llm_internal_id != ""
         ), f"Missing llm_internal_id for node {node.name} llm"
         assert llm_op_type in [
+            NodeOps.LLM_FULL,
             NodeOps.LLM_PREFILLING,
             NodeOps.LLM_PARTIAL_PREFILLING,
             NodeOps.LLM_FULL_PREFILLING,
@@ -552,6 +554,7 @@ class LLMTransformer(PayloadTransformer):
         ], f"Invalid llm_op_type for node {node.name} llm"
 
         if llm_op_type in [
+            NodeOps.LLM_FULL,
             NodeOps.LLM_PREFILLING,
             NodeOps.LLM_PARTIAL_PREFILLING,
             NodeOps.LLM_FULL_PREFILLING,

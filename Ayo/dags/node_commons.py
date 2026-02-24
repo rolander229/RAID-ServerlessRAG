@@ -27,6 +27,7 @@ class NodeOps(str, Enum):
     VECTORDB_INGESTION = "vectordb_ingestion"
     VECTORDB_SEARCHING = "vectordb_searching"
     RERANKING = "reranking"
+    LLM_FULL = "llm_full"
     LLM_PREFILLING = "llm_prefilling"
     LLM_DECODING = "llm_decoding"
     LLM_PARTIAL_PREFILLING = "llm_partial_prefilling"

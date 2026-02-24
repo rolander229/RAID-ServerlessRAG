@@ -232,6 +232,40 @@ class LLMEngine:
                         request.request_id, request.query_id, True
                     )
 
+            elif request.llm_op_type == NodeOps.LLM_FULL:
+                # Single-node full generation: prefill and decode in one step
+                if isinstance(self.engine, ray.actor.ActorHandle):
+                    result_generator = await self.engine.generate_with_stream.remote(
+                        prompt=request.prompt,
+                        sampling_params=sampling_params,
+                        request_id=request.llm_internal_id,
+                    )
+                else:
+                    result_generator = await self.engine.generate_with_stream(
+                        prompt=request.prompt,
+                        sampling_params=sampling_params,
+                        request_id=request.llm_internal_id,
+                    )
+
+                async for result in result_generator:
+                    if result.finished:
+                        result_ref = ray.put(result.outputs[0].text)
+
+                        print(
+                            f"Result for full request {request.request_id}: {result.outputs[0].text}"
+                        )
+
+                        if self.scheduler_ref is not None:
+                            await self.scheduler_ref.on_result.remote(
+                                request.request_id, request.query_id, result_ref
+                            )
+
+                        # Clean up request tracking
+                        if request.query_id in self.query_requests:
+                            self.query_requests[request.query_id].remove(request)
+                            if not self.query_requests[request.query_id]:
+                                del self.query_requests[request.query_id]
+
             elif request.llm_op_type == NodeOps.LLM_DECODING:
 
                 while True:

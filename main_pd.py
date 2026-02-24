@@ -181,61 +181,35 @@ def create_base_dag():
         RAG_QUESTION_ANSWERING_PROMPT_TEMPLATE_STRING,
     )
 
-    llm_prefilling_node = Node(
-        name="LLMPrefilling",
+    llm_full_node = Node(
+        name="LLM",
         node_type=NodeType.COMPUTE,
         engine_type=EngineType.LLM,
         io_schema=NodeIOSchema(
-            input_format={"queries": List[str], "reranked_results": List[List[str]]},
-            output_format={"prefill_state": bool},
+            input_format={
+                "queries": List[str],
+                "reranked_results": List[List[str]],
+            },
+            output_format={"answers": List[str]},
         ),
-        op_type=NodeOps.LLM_PREFILLING,
+        op_type=NodeOps.LLM_FULL,
         anno=NodeAnnotation.BATCHABLE,
         config={
+            "llm_internal_id": llm_internal_id,
             "prompt_template": replace_placeholders(
                 RAG_QUESTION_ANSWERING_PROMPT_TEMPLATE_STRING,
                 question="queries",
-                context="search_results",
+                context="reranked_results",
             ),
             "parse_json": True,
             "prompt": replace_placeholders(
                 RAG_QUESTION_ANSWERING_PROMPT_TEMPLATE_STRING,
                 question="queries",
-                context="search_results",
+                context="reranked_results",
             ),
             "partial_output": False,
             "partial_prefilling": False,
             "llm_partial_decoding_idx": -1,
-            "llm_internal_id": llm_internal_id,
-            "max_tokens": 10,
-        },
-    )
-
-    llm_decoding_node = Node(
-        name="LLMDecoding",
-        node_type=NodeType.COMPUTE,
-        engine_type=EngineType.LLM,
-        io_schema=NodeIOSchema(
-            input_format={"prefill_state": bool}, output_format={"result": str}
-        ),
-        op_type=NodeOps.LLM_DECODING,
-        anno=NodeAnnotation.BATCHABLE,
-        config={
-            "prompt_template": replace_placeholders(
-                RAG_QUESTION_ANSWERING_PROMPT_TEMPLATE_STRING,
-                question="queries",
-                context="search_results",
-            ),
-            "parse_json": True,
-            "prompt": replace_placeholders(
-                RAG_QUESTION_ANSWERING_PROMPT_TEMPLATE_STRING,
-                question="queries",
-                context="search_results",
-            ),
-            "partial_output": False,
-            "partial_prefilling": False,
-            "llm_partial_decoding_idx": -1,
-            "llm_internal_id": llm_internal_id,
             "max_tokens": 10,
         },
     )
@@ -274,8 +248,7 @@ def create_base_dag():
         >> query_embedding_node
         >> search_node
         >> reranking_node
-        >> llm_prefilling_node
-        >> llm_decoding_node
+        >> llm_full_node
     )
     ingestion_node >> search_node
     base_dag.register_nodes(
@@ -284,8 +257,7 @@ def create_base_dag():
         query_embedding_node,
         search_node,
         reranking_node,
-        llm_prefilling_node,
-        llm_decoding_node,
+        llm_full_node,
     )
 
     return base_dag
