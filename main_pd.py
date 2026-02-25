@@ -374,13 +374,30 @@ async def cleanup(app):
 
 
 if __name__ == "__main__":
+    import os
+
     from Ayo.vis.vis_graph import visualize_dag_with_compute_nodes_in_line
+    from Ayo.opt_pass.pd_disaggregation import PDDisaggregationPass
+
+    output_dir = ".output_cache"
+    os.makedirs(output_dir, exist_ok=True)
 
     dag = create_base_dag()
 
-    print(dag.get_full_dag_nodes_info())
+    """
+    Visualization & Optimization Steps
+    """
+    # visualize_dag_with_compute_nodes_in_line(
+    #     dag, f"{output_dir}/no_pd_no_opt.png"
+    # )
+
+    # dag.optimize([
+    #     PDDisaggregationPass(),
+    # ])
+
+    # print(dag.get_full_dag_nodes_info())
 
     # visualize_dag_with_compute_nodes_in_line(
-    #     dag, ".output_cache/no_pd_no_opt.png"
+    #     dag, f"{output_dir}/with_pd_opt.png"
     # )
     asyncio.run(run_app(dag))
