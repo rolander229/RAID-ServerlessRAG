@@ -32,13 +32,14 @@ def print_separator(title: str = ""):
         print('-' * 80)
 
 
-def search_existing_model_configs(model_name: str) -> Optional[ModelProfile]:
+def search_existing_model_configs(model_name: str, engine_type: EngineType) -> Optional[ModelProfile]:
     """Search for existing model configurations in the known models list"""
     if model_name in ConfigPlanner.KNOWN_MODELS:
         model_info = ConfigPlanner.KNOWN_MODELS[model_name]
         return ModelProfile(
             model_name=model_name,
             hf_model_path=model_name,
+            engine_type=engine_type,
             param_count=model_info.get("param_count"),
             embedding_dim=model_info.get("embedding_dim"),
             context_length=model_info.get("context_length"),
@@ -52,7 +53,7 @@ def demo_single_engine():
     print_separator("Single Engine Configuration Demo")
     model_name = "BAAI/bge-small-en-v1.5"
     engine_type = EngineType.EMBEDDER
-    model_profile = search_existing_model_configs(model_name)
+    model_profile = search_existing_model_configs(model_name, engine_type)
     if not model_profile:
         print(f"Warning: No existing model config found for '{model_name}'")
         model_profile = ModelProfile(
