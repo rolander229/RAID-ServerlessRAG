@@ -30,11 +30,12 @@ class ModelScale(str, Enum):
 @dataclass
 class HardwareSpec:
     """Available hardware specifications"""
-    
+    # TODO: currently only support same type GPUs.
     total_gpus: int = 0
     total_cpus: int = 1
     gpu_memory_gb: float = 0.0  # Memory per GPU in GB
     total_memory_gb: float = 0.0  # Total system memory in GB
+    used_memory_gb: float = 0.0  # Memory currently in use (for multi-engine planning)
     gpu_type: Optional[str] = None  # e.g., "A100", "V100", "RTX3090"
     
     def dict(self) -> Dict:
@@ -44,8 +45,37 @@ class HardwareSpec:
             "total_cpus": self.total_cpus,
             "gpu_memory_gb": self.gpu_memory_gb,
             "total_memory_gb": self.total_memory_gb,
+            "used_memory_gb": self.used_memory_gb,
             "gpu_type": self.gpu_type,
         }
+    def calc_req_gpu_num(self, memory_required_gb: float) -> float:
+        assert memory_required_gb >= 0, "Memory required cannot be negative"
+        assert self.gpu_memory_gb > 0, "GPU memory per GPU must be greater than 0"
+        assert self.total_gpus >= 0, "Total GPUs must be non-negative"
+        assert self.used_memory_gb < self.total_memory_gb, "Used memory cannot exceed total memory"
+        if self.used_memory_gb + memory_required_gb > self.total_memory_gb:
+            return 0.0
+        remained_gpu_num = self.available_gpu_num()
+        minimum_gpu_needed = memory_required_gb / self.gpu_memory_gb
+        num_gpus = min(minimum_gpu_needed, remained_gpu_num)
+        self.update_used_memory(num_gpus * self.gpu_memory_gb)
+        return num_gpus
+
+
+    def available_memory_gb(self) -> float:
+        """Calculate available memory considering used memory"""
+        return max(0.0, self.total_memory_gb - self.used_memory_gb)
+
+    def update_used_memory(self, additional_memory_gb: float):
+        """Update used memory after allocating resources for an engine"""
+        self.used_memory_gb += additional_memory_gb
+
+    def available_gpu_num(self) -> int:
+        """Calculate available GPUs considering memory constraints"""
+        if self.total_gpus == 0 or self.gpu_memory_gb == 0:
+            return 0
+        max_gpus_by_memory = int(self.available_memory_gb() / self.gpu_memory_gb)
+        return min(self.total_gpus, max_gpus_by_memory)
 
 
 @dataclass
@@ -178,9 +208,9 @@ class ConfigPlanner:
         #     memory_required = self.estimate_model_memory(model_profile)
         
         # Embedders are usually fast, prioritize throughput
-        if hardware.total_gpus > 0 and hardware.gpu_memory_gb >= memory_required:
+        if hardware.total_gpus > 0 and hardware.available_memory_gb() >= memory_required:
             # Use GPU for better throughput
-            num_gpus = min(0.2, hardware.total_gpus)  # Fractional GPU is fine
+            num_gpus = hardware.calc_req_gpu_num(memory_required)
             num_cpus = 1
             batch_size = min(workload.max_batch_size, 1024)
             throughput = batch_size * 50  # ~50 batches/sec on GPU
@@ -193,7 +223,7 @@ class ConfigPlanner:
             batch_size = min(workload.max_batch_size, 128)
             throughput = batch_size * 10  # ~10 batches/sec on CPU
             latency = 100
-            reasoning = "CPU-based embedding processing"
+            reasoning = "Fallback to CPU-based embedding processing"
         
         # Calculate instances based on throughput requirement
         required_throughput = workload.expected_qps * workload.avg_input_length / batch_size
@@ -237,7 +267,7 @@ class ConfigPlanner:
                 estimated_latency_ms=10000,
                 reasoning=reasoning
             )
-        
+        # TODO: fix this by adopting more accurate GPU memory estimation and fractional GPU allocation
         # Calculate required GPUs based on memory
         gpus_needed = max(1, int((memory_required * 1.5) / hardware.gpu_memory_gb) + 1)
         gpus_needed = min(gpus_needed, hardware.total_gpus)
@@ -286,8 +316,8 @@ class ConfigPlanner:
         #     memory_required = self.estimate_model_memory(model_profile)
         
         # Rerankers process query-document pairs
-        if hardware.total_gpus > 0 and hardware.gpu_memory_gb >= memory_required:
-            num_gpus = min(0.2, hardware.total_gpus)
+        if hardware.total_gpus > 0 and hardware.available_memory_gb >= memory_required:
+            num_gpus = hardware.calc_req_gpu_num(memory_required)
             num_cpus = 1
             batch_size = min(workload.max_batch_size, 256)
             pairs_per_second = batch_size * 30  # ~30 batches/sec

@@ -67,6 +67,7 @@ def demo_single_engine():
         total_cpus=16,
         gpu_memory_gb=32.0,  # 24GB per GPU (e.g., RTX 3090)
         total_memory_gb=128.0,
+        used_memory_gb=0.0,
         gpu_type="v100"
     )
     
