@@ -1,13 +1,7 @@
 from transformers import AutoConfig, AutoModelForCausalLM
 from accelerate import init_empty_weights
 from extension.model_profile import ModelProfile
-
-MEMORY_PER_BILLION_PARAMS = {
-    "fp32": 4.0,
-    "fp16": 2.0,
-    "int8": 1.0,
-    "int4": 0.5,
-}
+from extension.mem_utils.common import MEMORY_PER_BILLION_PARAMS, KNOWN_PRECISION
 
 def estimate_hf_model_size(
     model_profile: ModelProfile,
@@ -24,11 +18,8 @@ def estimate_hf_model_size(
     # do not use p.element_size() because it may not reflect the actual memory usage due to quantization and other optimizations
     # use precision-based estimation instead
     if precision is not None:
-        try: 
-            precision_bytes = MEMORY_PER_BILLION_PARAMS.get(precision, 4.0)
-            total_size_bytes = sum(p.numel() for p in model.parameters()) * precision_bytes
-        except KeyError:
-            total_size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        precision_bytes = MEMORY_PER_BILLION_PARAMS[precision]
+        total_size_bytes = sum(p.numel() for p in model.parameters()) * precision_bytes
     else:
         total_size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
 
@@ -63,16 +54,16 @@ def get_num_parameters(config):
 def estimate_llm_inference_memory(model_profile: ModelProfile, 
                               batch_size=1, 
                               seq_length=512,
-                              dtype="fp16"):
+                              precision=None):
     try:
-        weights_memory = estimate_hf_model_size(model_profile, precision=dtype)
+        weights_memory = estimate_hf_model_size(model_profile, precision=precision)
     except Exception as e:
         config = AutoConfig.from_pretrained(model_profile.hf_model_path)
 
-        # Bytes per parameter based on dtype
+        # Bytes per parameter based on precision
         bytes_per_param = {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "int4": 0.5}
-        param_bytes = bytes_per_param[dtype]
-    
+        param_bytes = bytes_per_param.get(precision, 2)
+
         # 1. Model weights
         num_params = get_num_parameters(config)
         weights_memory = num_params * param_bytes
@@ -98,32 +89,33 @@ def estimate_llm_infer_memory(
     model_profile: ModelProfile,
     batch_size: int = 1,
     seq_length: int = 512,
-    dtype: str = "fp16",
+    precision: str = "fp32",
 ) -> float:
-    bytes_per_param = {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "int4": 0.5}
-    param_bytes = bytes_per_param.get(dtype, 2)
+    assert precision in KNOWN_PRECISION, f"Unknown precision '{precision}'"
+
 
     # --- Load config (needed for kv_cache & activations regardless of path) ---
-    try:
-        config = AutoConfig.from_pretrained(model_profile.hf_model_path)
-    except Exception:
-        config = None
+    config = AutoConfig.from_pretrained(model_profile.hf_model_path)
 
     # --- 1. Model weights ---
-    try:
-        weights_bytes = estimate_hf_model_size(model_profile, precision=dtype)
-    except Exception:
-        # Fallback: estimate from config if available, else from param_count
-        if config is not None:
-            num_params = get_num_parameters(config)
-        elif model_profile.param_count is not None:
-            num_params = int(model_profile.param_count)
-        else:
-            raise ValueError(
-                f"Cannot estimate weights: both hf_model_path and param_count are unavailable "
-                f"for model '{model_profile.model_name}'."
-            )
-        weights_bytes = int(num_params * param_bytes)
+    weights_bytes = estimate_hf_model_size(model_profile, precision=precision)
+
+    if precision is not None:
+        param_bytes = MEMORY_PER_BILLION_PARAMS[precision]
+    else:
+        # TODO: this can get from the loaded hf model
+        param_bytes = 4.0  # Default to fp32 if precision is None
+    # # Fallback: estimate from config if available, else from param_count
+    # if config is not None:
+    #     num_params = get_num_parameters(config)
+    # elif model_profile.param_count is not None:
+    #     num_params = int(model_profile.param_count)
+    # else:
+    #     raise ValueError(
+    #         f"Cannot estimate weights: both hf_model_path and param_count are unavailable "
+    #         f"for model '{model_profile.model_name}'."
+    #     )
+    # weights_bytes = int(num_params * param_bytes)
 
     # --- 2. KV cache ---
     # kv_cache requires architecture info; fallback to a fixed proportion of weights

@@ -16,6 +16,7 @@ from extension.mem_utils.est_embed import estimate_embed_infer_memory
 from extension.mem_utils.est_reranker import estimate_reranker_infer_memory
 from extension.mem_utils.est_llm import estimate_llm_infer_memory
 from extension.mem_utils.known_models import KNOWN_MODELS_CONFIG
+from extension.mem_utils.mem_pynvml import estimate_cuda_context_memory
 
 
 class ModelScale(str, Enum):
@@ -31,13 +32,18 @@ class ModelScale(str, Enum):
 class HardwareSpec:
     """Available hardware specifications"""
     # TODO: currently only support same type GPUs.
+    # TODO: minus the CUDA context memory at the initialization
     total_gpus: int = 0
     total_cpus: int = 1
     gpu_memory_gb: float = 0.0  # Memory per GPU in GB
     total_memory_gb: float = 0.0  # Total system memory in GB
     used_memory_gb: float = 0.0  # Memory currently in use (for multi-engine planning)
     gpu_type: Optional[str] = None  # e.g., "A100", "V100", "RTX3090"
-    
+
+    def __post_init__(self):
+        self.gpu_memory_gb -= estimate_cuda_context_memory()  # Account for CUDA context overhead
+        self.total_memory_gb -= estimate_cuda_context_memory() * self.total_gpus  # Account for CUDA context overhead across all GPUs
+
     def dict(self) -> Dict:
         """Convert to dictionary"""
         return {

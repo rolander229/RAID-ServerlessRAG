@@ -184,8 +184,8 @@ def main():
     demo_single_engine()
 
 def test_entry():
-    # test_est_model_mem()
-    test_est_reranker_mem()
+    test_est_model_mem()
+    # test_est_reranker_mem()
 if __name__ == "__main__":
     # main()
     test_entry()

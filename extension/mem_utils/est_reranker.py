@@ -5,27 +5,20 @@ from transformers import AutoConfig, AutoModelForSequenceClassification
 from accelerate import init_empty_weights
 from extension.model_profile import ModelProfile
 
-MEMORY_PER_BILLION_PARAMS = {
-    "fp32": 4.0,
-    "fp16": 2.0,
-    "int8": 1.0,
-    "int4": 0.5,
-}
+from extension.mem_utils.common import MEMORY_PER_BILLION_PARAMS, KNOWN_PRECISION
+
 
 def estimate_sentence_transformer_size(
     model_profile: ModelProfile,
-    precision: str = None
+    precision: str = "fp32"
 ) -> int:
     config = AutoConfig.from_pretrained(model_profile.hf_model_path)
     with init_empty_weights():
         model = AutoModelForSequenceClassification.from_config(config)
     
     if precision is not None:
-        try: 
-            precision_bytes = MEMORY_PER_BILLION_PARAMS.get(precision, 4.0)
-            total_size_bytes = sum(p.numel() for p in model.parameters()) * precision_bytes
-        except KeyError:
-            total_size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        precision_bytes = MEMORY_PER_BILLION_PARAMS[precision]
+        total_size_bytes = sum(p.numel() for p in model.parameters()) * precision_bytes
     else:
         total_size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
     
@@ -58,7 +51,7 @@ def _estimate_bert_activation_bytes(
     intermediate_size: int,
     batch_size: int,
     seq_length: int,
-    dtype: str,
+    precision: str,
 ) -> int:
     """
     Estimate activation memory for a BERT-style transformer during inference.
@@ -74,7 +67,7 @@ def _estimate_bert_activation_bytes(
     We keep all layer activations in memory simultaneously for inference
     (no gradient checkpointing needed, but full forward pass buffers exist).
     """
-    bytes_per_element = MEMORY_PER_BILLION_PARAMS.get(dtype, 2.0)
+    bytes_per_element = MEMORY_PER_BILLION_PARAMS[precision]
     
     B, S, H, L, I = batch_size, seq_length, hidden_size, num_hidden_layers, intermediate_size
     A = num_attention_heads
@@ -121,7 +114,7 @@ def _estimate_activation_memory(
     model_weights_bytes: int,
     batch_size: int,
     seq_length: int,
-    dtype: str,
+    precision: str,
 ) -> int:
     """
     Estimate activation memory: try architecture-aware formula first,
@@ -137,7 +130,7 @@ def _estimate_activation_memory(
             intermediate_size=config_params["intermediate_size"],
             batch_size=batch_size,
             seq_length=seq_length,
-            dtype=dtype,
+            precision=precision,
         )
     else:
         return _estimate_activation_bytes_fallback(
@@ -150,7 +143,7 @@ def estimate_reranker_infer_memory(
     model_profile: ModelProfile,
     batch_size: int = 1,
     seq_length: int = 512,
-    dtype: str = None,
+    precision: str = "fp32",
 ) -> float:
     """
     Estimate total GPU/CPU memory (in GB) for reranker model inference.
@@ -162,13 +155,15 @@ def estimate_reranker_infer_memory(
     embedding model. seq_length here should already reflect the combined
     query+doc length (default 512 = max for most BERT-based rerankers).
     """
-    weights_bytes = estimate_sentence_transformer_size(model_profile, precision=dtype)
+    assert precision in KNOWN_PRECISION, f"Unknown precision '{precision}'"
+
+    weights_bytes = estimate_sentence_transformer_size(model_profile, precision=precision)
     activation_bytes = _estimate_activation_memory(
         hf_model_path=model_profile.hf_model_path,
         model_weights_bytes=weights_bytes,
         batch_size=batch_size,
         seq_length=seq_length,
-        dtype=dtype,
+        precision=precision,    
     )
 
     total_bytes = weights_bytes + activation_bytes
