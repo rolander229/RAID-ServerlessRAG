@@ -1,12 +1,9 @@
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
-from transformers import AutoConfig, AutoModelForCausalLM
-from sentence_transformers import SentenceTransformer
+from transformers import AutoConfig, AutoModelForSequenceClassification
 
 from accelerate import init_empty_weights
 from extension.model_profile import ModelProfile
-
-import math
 
 MEMORY_PER_BILLION_PARAMS = {
     "fp32": 4.0,
@@ -15,16 +12,13 @@ MEMORY_PER_BILLION_PARAMS = {
     "int4": 0.5,
 }
 
-# TODO: it seems that reranker model does not utilize the sentence-transformers library: https://huggingface.co/BAAI/bge-reranker-base
-
 def estimate_sentence_transformer_size(
     model_profile: ModelProfile,
     precision: str = None
 ) -> int:
-    model = SentenceTransformer(
-        model_profile.hf_model_path,
-        device="meta",
-    )
+    config = AutoConfig.from_pretrained(model_profile.hf_model_path)
+    with init_empty_weights():
+        model = AutoModelForSequenceClassification.from_config(config)
     
     if precision is not None:
         try: 
