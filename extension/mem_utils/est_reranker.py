@@ -1,8 +1,11 @@
 from typing import Any, Dict, Optional
 
 from transformers import AutoConfig, AutoModelForCausalLM
+from sentence_transformers import SentenceTransformer
+
 from accelerate import init_empty_weights
 from extension.model_profile import ModelProfile
+
 import math
 
 MEMORY_PER_BILLION_PARAMS = {
@@ -12,29 +15,15 @@ MEMORY_PER_BILLION_PARAMS = {
     "int4": 0.5,
 }
 
+# TODO: it seems that reranker model does not utilize the sentence-transformers library: https://huggingface.co/BAAI/bge-reranker-base
+
 def estimate_sentence_transformer_size(
     model_profile: ModelProfile,
-    model_kwargs: Optional[Dict[str, Any]] = None,
-    precision: str = "fp16"
-) -> float:
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise ImportError(
-            "sentence-transformers is required for get_sentence_transformer_size"
-        ) from exc
-
-    default_model_kwargs = {
-        "low_cpu_mem_usage": True,
-        "device_map": "meta",
-    }
-    combined_model_kwargs = {**default_model_kwargs, **(model_kwargs or {})}
-
-    # Instantiate SentenceTransformer with meta device to avoid allocating weights
+    precision: str = None
+) -> int:
     model = SentenceTransformer(
         model_profile.hf_model_path,
         device="meta",
-        model_kwargs=combined_model_kwargs,
     )
     
     if precision is not None:
@@ -167,7 +156,7 @@ def estimate_reranker_infer_memory(
     model_profile: ModelProfile,
     batch_size: int = 1,
     seq_length: int = 512,
-    dtype: str = "fp16",
+    dtype: str = None,
 ) -> float:
     """
     Estimate total GPU/CPU memory (in GB) for reranker model inference.

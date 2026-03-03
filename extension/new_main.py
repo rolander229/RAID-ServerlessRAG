@@ -141,11 +141,48 @@ def demo_quick_estimate():
         print(f"  Throughput: {estimation.estimated_throughput:.2f} req/s")
 
 
+def test_est_model_mem():
+    model_name = "BAAI/bge-small-en-v1.5"
+    engine_type = EngineType.EMBEDDER
+    model_profile = search_existing_model_configs(model_name, engine_type)
+    if not model_profile:
+        print(f"Warning: No existing model config found for '{model_name}'")
+        model_profile = ModelProfile(
+            model_name=model_name,
+            engine_type=engine_type
+        )
+    
+    from mem_utils.est_embed import estimate_embed_infer_memory, estimate_sentence_transformer_size
+    model_weights_size = estimate_sentence_transformer_size(model_profile=model_profile) 
+    print(f"Estimated model weights size for {model_profile.model_name}: {model_weights_size} bytes, which is {model_weights_size / (1024**3):.2f} GB")
+
+    total_required_memory_gb = estimate_embed_infer_memory(model_profile=model_profile)
+    print(f"Estimated total GPU memory required for inference: {total_required_memory_gb:.2f} GB")
+
+    # model_name = "BAAI/bge-reranker-base"
+    # engine_type = EngineType.RERANKER
+    # model_profile = search_existing_model_configs(model_name, engine_type)
+    # if not model_profile:
+    #     print(f"Warning: No existing model config found for '{model_name}'")
+    #     model_profile = ModelProfile(
+    #         model_name=model_name,
+    #         engine_type=engine_type
+    #     )
+    # from mem_utils.est_reranker import estimate_reranker_infer_memory, estimate_sentence_transformer_size
+    # model_weights_size = estimate_sentence_transformer_size(model_profile=model_profile) 
+    # print(f"Estimated model weights size for {model_profile.model_name}: {model_weights_size} bytes, which is {model_weights_size / (1024**3):.2f} GB")
+
+    # total_required_memory_gb = estimate_reranker_infer_memory(model_profile=model_profile)
+    # print(f"Estimated total GPU memory required for inference: {total_required_memory_gb:.2f} GB")
+
 def main():
     """Main entry point"""
     print_separator("AYO Config Planner Demo")
     demo_single_engine()
 
+def test_entry():
+    test_est_model_mem()
 
 if __name__ == "__main__":
-    main()
+    # main()
+    test_entry()
