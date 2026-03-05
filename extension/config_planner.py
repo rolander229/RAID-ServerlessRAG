@@ -17,6 +17,7 @@ from extension.mem_utils.est_reranker import estimate_reranker_infer_memory
 from extension.mem_utils.est_llm import estimate_llm_infer_memory
 from extension.mem_utils.known_models import KNOWN_MODELS_CONFIG
 from extension.mem_utils.mem_pynvml import estimate_cuda_context_memory
+import math
 
 
 class ModelScale(str, Enum):
@@ -35,6 +36,7 @@ class HardwareSpec:
     # TODO: minus the CUDA context memory at the initialization
     total_gpus: int = 0
     total_cpus: int = 1
+    used_cpus: int = 0
     gpu_memory_gb: float = 0.0  # Memory per GPU in GB
     total_memory_gb: float = 0.0  # Total system memory in GB
     used_memory_gb: float = 0.0  # Memory currently in use (for multi-engine planning)
@@ -83,6 +85,13 @@ class HardwareSpec:
         max_gpus_by_memory = int(self.available_memory_gb() / self.gpu_memory_gb)
         return min(self.total_gpus, max_gpus_by_memory)
 
+    def update_used_cpu(self, additional_cpus: int):
+        """Update used CPUs after allocating resources for an engine"""
+        self.used_cpus += additional_cpus
+    
+    def available_cpus(self) -> int:
+        """Calculate available CPUs considering used CPUs"""
+        return max(0, self.total_cpus - self.used_cpus)
 
 @dataclass
 class WorkloadProfile:
@@ -113,11 +122,11 @@ class ResourceEstimation:
     
     num_gpus: float
     num_cpus: int
-    instances: int
+    instances: Optional[int]
     memory_per_instance_gb: float
-    recommended_batch_size: int
-    estimated_throughput: float  # requests per second
-    estimated_latency_ms: float
+    recommended_batch_size: Optional[int]
+    estimated_throughput: Optional[float]  # requests per second
+    estimated_latency_ms: Optional[float]
     reasoning: str  # Explanation of the estimation
     
     def dict(self) -> Dict:
@@ -253,12 +262,7 @@ class ConfigPlanner:
         workload: WorkloadProfile
     ) -> ResourceEstimation:
         """Estimate resources for LLM models"""
-        memory_required = self.estimate_model_memory(model_profile)
-        # try:
-        #     memory_required = estimate_llm_infer_memory(model_profile)
-        # except Exception as e:
-        #     print(f"Error estimating LLM memory: {e}\nFalling back to default model memory estimation.")
-        #     memory_required = self.estimate_model_memory(model_profile)
+        memory_required = estimate_llm_infer_memory(model_profile)
         
         # LLMs require GPU and substantial memory
         if hardware.total_gpus == 0:
@@ -273,37 +277,60 @@ class ConfigPlanner:
                 estimated_latency_ms=10000,
                 reasoning=reasoning
             )
-        # TODO: fix this by adopting more accurate GPU memory estimation and fractional GPU allocation
-        # Calculate required GPUs based on memory
-        gpus_needed = max(1, int((memory_required * 1.5) / hardware.gpu_memory_gb) + 1)
-        gpus_needed = min(gpus_needed, hardware.total_gpus)
-        
-        # Estimate throughput (very rough heuristics)
-        tokens_per_second = 50 * gpus_needed  # ~50 tokens/sec per GPU
-        avg_total_tokens = workload.avg_input_length + workload.avg_output_length
-        requests_per_second = tokens_per_second / avg_total_tokens
-        
-        # Calculate instances
-        instances = max(1, int(workload.expected_qps / requests_per_second) + 1)
-        instances = min(instances, max(1, hardware.total_gpus // gpus_needed))
-        
-        # Batch size for throughput optimization
-        batch_size = min(workload.max_batch_size, 256)
-        latency = (avg_total_tokens / tokens_per_second) * 1000  # Convert to ms
-        
-        reasoning = (
-            f"LLM requires {gpus_needed} GPU(s) per instance, "
-            f"supporting ~{requests_per_second:.2f} req/s per instance"
-        )
+        if hardware.gpu_memory_gb <= 0:
+            reasoning = "WARNING: Invalid GPU memory spec. Unable to place LLM on GPU. Using minimal CPU config."
+            return ResourceEstimation(
+                num_gpus=0,
+                num_cpus=hardware.total_cpus,
+                instances=1,
+                memory_per_instance_gb=memory_required,
+                recommended_batch_size=1,
+                estimated_throughput=0.1,
+                estimated_latency_ms=10000,
+                reasoning=reasoning
+            )
+
+        required_gpu_fraction = memory_required / hardware.gpu_memory_gb
+        available_gpu_fraction = hardware.available_memory_gb() / hardware.gpu_memory_gb
+        allocatable_gpu_fraction = min(required_gpu_fraction, available_gpu_fraction)
+        max_instances_by_memory = max(0, math.floor(hardware.available_memory_gb() / memory_required)) if memory_required > 0 else 0
+
+        if allocatable_gpu_fraction <= 0:
+            reasoning = (
+                "WARNING: GPUs exist but available GPU memory is insufficient for LLM inference. "
+                "Using minimal CPU config."
+            )
+            return ResourceEstimation(
+                num_gpus=0,
+                num_cpus=hardware.total_cpus,
+                instances=1,
+                memory_per_instance_gb=memory_required,
+                recommended_batch_size=1,
+                estimated_throughput=0.1,
+                estimated_latency_ms=10000,
+                reasoning=reasoning
+            )
+
+        if allocatable_gpu_fraction < required_gpu_fraction:
+            reasoning = (
+                f"Insufficient GPU memory: requires ~{required_gpu_fraction:.2f} GPU(s) by memory, "
+                f"but only ~{available_gpu_fraction:.2f} GPU(s) available by memory. "
+                "Returned non-performance placeholders for unresolved sizing metrics."
+            )
+        else:
+            reasoning = (
+                f"LLM GPU allocation is memory-derived: requires ~{required_gpu_fraction:.2f} GPU(s) per instance. "
+                "Batch size, throughput, and latency require runtime benchmarking and are not inferred heuristically."
+            )
         
         return ResourceEstimation(
-            num_gpus=gpus_needed,
+            num_gpus=allocatable_gpu_fraction,
             num_cpus=2,
-            instances=instances,
-            memory_per_instance_gb=memory_required * 1.5,
-            recommended_batch_size=batch_size,
-            estimated_throughput=requests_per_second * instances,
-            estimated_latency_ms=latency,
+            instances=max_instances_by_memory,
+            memory_per_instance_gb=memory_required,
+            recommended_batch_size=None,
+            estimated_throughput=None,
+            estimated_latency_ms=None,
             reasoning=reasoning
         )
     
@@ -460,9 +487,10 @@ class ConfigPlanner:
         
         # Prepare model config
         model_config = base_model_config.copy() if base_model_config else {}
-        model_config.update({
-            "max_batch_size": estimation.recommended_batch_size,
-        })
+        if estimation.recommended_batch_size is not None:
+            model_config.update({
+                "max_batch_size": estimation.recommended_batch_size,
+            })
         
         # Add model name if not present
         if "model_name" not in model_config:
@@ -473,8 +501,12 @@ class ConfigPlanner:
             model_config["device"] = "cuda"
         
         # Create latency profile
+        timeout_seconds = 60
+        if estimation.estimated_latency_ms is not None:
+            timeout_seconds = max(60, int(estimation.estimated_latency_ms / 1000) * 3)
+
         latency_profile = {
-            "timeout": max(60, int(estimation.estimated_latency_ms / 1000) * 3),
+            "timeout": timeout_seconds,
             "batch_wait": 0.1 if estimation.num_gpus > 0 else 0.05,
         }
         
@@ -483,7 +515,7 @@ class ConfigPlanner:
             engine_type=model_profile.engine_type,
             num_gpus=estimation.num_gpus,
             num_cpus=estimation.num_cpus,
-            instances=estimation.instances,
+            instances=estimation.instances if estimation.instances and estimation.instances > 0 else 1,
             resources={},
             model_config=model_config,
             latency_profile=latency_profile,

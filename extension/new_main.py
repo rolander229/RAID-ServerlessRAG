@@ -177,6 +177,24 @@ def test_est_reranker_mem():
     total_required_memory_gb = estimate_reranker_infer_memory(model_profile=model_profile)
     print(f"Estimated total GPU memory required for inference: {total_required_memory_gb:.2f} GB")
 
+def test_est_llm_mem():
+    model_name = "openai-community/gpt2"
+    engine_type = EngineType.LLM
+    model_profile = search_existing_model_configs(model_name, engine_type)
+    if not model_profile:
+        print(f"Warning: No existing model config found for '{model_name}'")
+        model_profile = ModelProfile(
+            model_name=model_name,
+            engine_type=engine_type
+        )
+    from mem_utils.est_llm import estimate_llm_infer_memory, estimate_hf_model_size
+    model_weights_size = estimate_hf_model_size(model_profile=model_profile, precision=None)
+    print(f"Estimated model weights size for {model_profile.model_name}: {model_weights_size} bytes, which is {model_weights_size / (1024**3):.2f}GB")
+
+    total_required_memory_gb = estimate_llm_infer_memory(model_profile=model_profile, precision=None)
+    print(f"Estimated total GPU memory required for inference: {total_required_memory_gb:.2f} GB")
+    return
+
 
 def main():
     """Main entry point"""
@@ -184,8 +202,10 @@ def main():
     demo_single_engine()
 
 def test_entry():
-    test_est_model_mem()
+    # test_est_model_mem()
     # test_est_reranker_mem()
+    test_est_llm_mem()
+
 if __name__ == "__main__":
     # main()
     test_entry()

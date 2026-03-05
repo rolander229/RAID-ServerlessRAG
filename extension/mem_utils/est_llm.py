@@ -5,7 +5,7 @@ from extension.mem_utils.common import MEMORY_PER_BILLION_PARAMS, KNOWN_PRECISIO
 
 def estimate_hf_model_size(
     model_profile: ModelProfile,
-    precision: str = "fp16"
+    precision: str = "fp32"
 ) -> int:
     config = AutoConfig.from_pretrained(model_profile.hf_model_path)
 
@@ -105,17 +105,6 @@ def estimate_llm_infer_memory(
     else:
         # TODO: this can get from the loaded hf model
         param_bytes = 4.0  # Default to fp32 if precision is None
-    # # Fallback: estimate from config if available, else from param_count
-    # if config is not None:
-    #     num_params = get_num_parameters(config)
-    # elif model_profile.param_count is not None:
-    #     num_params = int(model_profile.param_count)
-    # else:
-    #     raise ValueError(
-    #         f"Cannot estimate weights: both hf_model_path and param_count are unavailable "
-    #         f"for model '{model_profile.model_name}'."
-    #     )
-    # weights_bytes = int(num_params * param_bytes)
 
     # --- 2. KV cache ---
     # kv_cache requires architecture info; fallback to a fixed proportion of weights
