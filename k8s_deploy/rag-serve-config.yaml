@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"rag-serve"},"name":"rag-serve","namespace":"faas-test"},"spec":{"containers":[{"env":[{"name":"HF_ENDPOINT","value":"https://hf-mirror.com"}],"image":"gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.11-cu12.1.1-e08c","name":"rag-serve","ports":[{"containerPort":8000,"name":"http","protocol":"TCP"}],"resources":{"limits":{"ephemeral-storage":"50Gi","nvidia.com/v100":1},"requests":{"ephemeral-storage":"50Gi","nvidia.com/v100":1}}}],"nodeName":"dell-67","restartPolicy":"Never"}}
+  creationTimestamp: "2026-02-13T02:19:21Z"
+  deletionGracePeriodSeconds: 30
+  deletionTimestamp: "2026-03-06T05:27:37Z"
+  generation: 2
+  labels:
+    app: rag-serve
+  name: rag-serve
+  namespace: faas-test
+  resourceVersion: "907850835"
+  uid: ccda6e41-451c-497d-aea2-099e7bb85154
+spec:
+  containers:
+  - env:
+    - name: HF_ENDPOINT
+      value: https://hf-mirror.com
+    image: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.11-cu12.1.1-e08c
+    imagePullPolicy: IfNotPresent
+    name: rag-serve
+    ports:
+    - containerPort: 8000
+      name: http
+      protocol: TCP
+    resources:
+      limits:
+        ephemeral-storage: 50Gi
+        nvidia.com/v100: "1"
+      requests:
+        ephemeral-storage: 50Gi
+        nvidia.com/v100: "1"
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: kube-api-access-c2mjf
+      readOnly: true
+  dnsPolicy: ClusterFirst
+  enableServiceLinks: true
+  nodeName: dell-67
+  preemptionPolicy: PreemptLowerPriority
+  priority: 0
+  restartPolicy: Never
+  schedulerName: default-scheduler
+  securityContext: {}
+  serviceAccount: default
+  serviceAccountName: default
+  terminationGracePeriodSeconds: 30
+  tolerations:
+  - effect: NoExecute
+    key: node.kubernetes.io/not-ready
+    operator: Exists
+    tolerationSeconds: 300
+  - effect: NoExecute
+    key: node.kubernetes.io/unreachable
+    operator: Exists
+    tolerationSeconds: 300
+  volumes:
+  - name: kube-api-access-c2mjf
+    projected:
+      defaultMode: 420
+      sources:
+      - serviceAccountToken:
+          expirationSeconds: 3607
+          path: token
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: kube-root-ca.crt
+      - downwardAPI:
+          items:
+          - fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+            path: namespace
+status:
+  conditions:
+  - lastProbeTime: null
+    lastTransitionTime: "2026-02-13T02:23:52Z"
+    observedGeneration: 1
+    status: "True"
+    type: PodReadyToStartContainers
+  - lastProbeTime: null
+    lastTransitionTime: "2026-02-13T02:19:21Z"
+    observedGeneration: 1
+    status: "True"
+    type: Initialized
+  - lastProbeTime: null
+    lastTransitionTime: "2026-03-06T05:21:46Z"
+    observedGeneration: 1
+    status: "False"
+    type: Ready
+  - lastProbeTime: null
+    lastTransitionTime: "2026-02-13T02:23:52Z"
+    observedGeneration: 1
+    status: "True"
+    type: ContainersReady
+  - lastProbeTime: null
+    lastTransitionTime: "2026-02-13T02:19:21Z"
+    observedGeneration: 1
+    status: "True"
+    type: PodScheduled
+  - lastProbeTime: null
+    lastTransitionTime: "2026-03-06T05:27:06Z"
+    message: 'Taint manager: deleting due to NoExecute taint'
+    observedGeneration: 1
+    reason: DeletionByTaintManager
+    status: "True"
+    type: DisruptionTarget
+  containerStatuses:
+  - allocatedResources:
+      ephemeral-storage: 50Gi
+      nvidia.com/v100: "1"
+    containerID: containerd://068b997c75ab67a28562f92dd5ef3b1bccb5db7022c5da41c631284eaa806dfd
+    image: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.11-cu12.1.1-e08c
+    imageID: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd@sha256:cf96a0cd18e2ffd7e1e21c4cff5fa6a3c3d265d50f4d305e6bf0ee3068d0201e
+    lastState: {}
+    name: rag-serve
+    ready: true
+    resources:
+      limits:
+        ephemeral-storage: 50Gi
+        nvidia.com/v100: "1"
+      requests:
+        ephemeral-storage: 50Gi
+        nvidia.com/v100: "1"
+    restartCount: 0
+    started: true
+    state:
+      running:
+        startedAt: "2026-02-13T02:23:51Z"
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: kube-api-access-c2mjf
+      readOnly: true
+      recursiveReadOnly: Disabled
+  hostIP: 192.168.5.67
+  hostIPs:
+  - ip: 192.168.5.67
+  observedGeneration: 1
+  phase: Running
+  podIP: 10.244.33.143
+  podIPs:
+  - ip: 10.244.33.143
+  qosClass: BestEffort
+  startTime: "2026-02-13T02:19:21Z"
