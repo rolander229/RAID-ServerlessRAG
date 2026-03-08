@@ -117,8 +117,19 @@ if st.button("Run App", type="primary"):
             try:
                 # 运行我们的 asyncio 逻辑
                 # 因为 Streamlit 在它自己的事件循环里，我们可以直接用 asyncio.run
-                asyncio.run(run_app(st.session_state.dag))
-                st.success("App finished running successfully! Detailed outputs are printed in the console.")
+                results = asyncio.run(run_app(st.session_state.dag))
+                st.success("App finished running successfully!")
+                
+                if results:
+                    st.markdown("### Execution Results")
+                    for i, res in enumerate(results):
+                        with st.expander(f"Query {i} Output", expanded=True):
+                            if "LLMDecoding" in res:
+                                st.markdown("**LLMDecoding Final Answer:**")
+                                st.info(res["LLMDecoding"])
+                            else:
+                                st.write(res)
+                                
             except Exception as e:
                 st.error(f"Error during runtime: {e}")
                 st.code(traceback.format_exc())

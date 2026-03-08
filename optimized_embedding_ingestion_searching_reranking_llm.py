@@ -317,7 +317,7 @@ async def process_query(
         raise Exception(f"Query {query_id} processing failed: {str(e)}")
 
 
-async def run_app(dag: DAG) -> None:
+async def run_app(dag: DAG) -> List[Any]:
     try:
         # Initialize the application
         app = APP.init()
@@ -383,12 +383,16 @@ async def run_app(dag: DAG) -> None:
             for key, value in result.items():
                 if key not in ['Embedding', 'Ingestion', 'QueryEmbedding', 'Search']:
                     print(f"{key} output:\n{value}")
+                if key in ['LLMDecoding']:
+                    print(f"Final output:\n{value}")
 
             # for key, value in result.items():
             #     if "search" in key.lower():
             #         print(f"Search results length: {len(value)}")
             #     elif "reranking" in key.lower():
             #         print(f"Reranking results length: {len(value)}")
+            
+        return results
 
     except Exception as e:
         print(f"Main program error stack:\n{traceback.format_exc()}")
