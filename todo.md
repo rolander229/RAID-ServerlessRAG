@@ -7,9 +7,14 @@
      - [x] Full PD已实现
        - [x] Full PD已测试运行 
      - [x] 实现一个PD分离的优化Pass，将原本在同一Stage中的节点拆分到不同Stage中，以提升并行度和资源利用率。 
-     - [ ] PD disaggregation的运行测试
+     - [x] PD disaggregation的运行测试
+     - [ ] Chatbot模式下PD disaggregation的测试（Prefill负责第一次输入的计算，后续使用Decode）
 - [ ] 调通config planner，完成端到端的dag生成，config估计以及运行
 - [ ] 做一个serving的backend，支持用户提交pdf和query，返回结果
-- [ ] DAG拆分工具的可视化（动画化）
+  - [ ] frontend has been implemented, need to further implement the chatbot.
+- [x] DAG拆分工具的可视化（动画化）
 - [ ] 增加原始未优化拆分的情况
+  - [ ] 单体应用怎么做？==> 单进程运行，或者说不进行前后端拆分，直接在一个进程里运行整个DAG
+  - [ ] 单体 => unoptimized => optimized的对比
 - [ ] 推理引擎已经进行了一定程度的前后端分离，前端由graph scheduler负责DAG的调度和执行，后端由engine scheduler负责具体的引擎执行。后续考虑将后端由单机迁移到多pod的场景。或者进一步对前后端都进行重写
+  - [x] 在`origin/faas_deploy` branch中已经使用code agent实现了一个使用nucilo/knative的版本
