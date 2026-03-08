@@ -426,12 +426,14 @@ if __name__ == "__main__":
         os.makedirs(args.output_dir)
     
     from Ayo.vis.vis_graph import visualize_dag_with_node_types
+    from Ayo.vis.vis_graph_interactive import visualize_dag_interactive
 
     dag = create_base_dag()
 
     print(dag.get_full_dag_nodes_info())
 
     visualize_dag_with_compute_nodes_in_line(dag, f"{args.output_dir}/before_optimize_embedd_ingest_search_reranking.png")
+    visualize_dag_interactive(dag, f"{args.output_dir}/before_optimize_interactive.html")
 
     # optimize DAG
     from Ayo.opt_pass.decoding_pipeling import LLMDecodingPipeliningPass
@@ -457,6 +459,9 @@ if __name__ == "__main__":
 
     visualize_dag_with_compute_nodes_in_line(
        dag, f"{args.output_dir}/optimized_dag_for_embedding_ingestion_searching_reranking_llm.png"
+    )
+    visualize_dag_interactive(
+       dag, f"{args.output_dir}/optimized_interactive.html"
     )
 
     asyncio.run(run_app(dag))
