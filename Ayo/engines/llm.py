@@ -38,7 +38,7 @@ class LLMEngine:
 
     def __init__(
         self,
-        model_name: str = "meta-llama/Llama-2-7b-chat-hf",
+        model_name: str = "Qwen/Qwen2.5-0.5B",
         tensor_parallel_size: int = 1,
         max_num_seqs: int = 256,
         max_queue_size: int = 1000,
@@ -65,9 +65,15 @@ class LLMEngine:
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
             trust_remote_code=trust_remote_code,
-            dtype=dtype,
+            dtype="float16",
             max_num_seqs=max_num_seqs,
-            engine_use_ray=False,
+            block_size=16,
+            enforce_eager=True,
+            disable_custom_all_reduce=True,
+            enable_prefix_caching=False,
+            use_v2_block_manager=False,
+            gpu_memory_utilization=0.85,
+            # engine_use_ray=False,
         )
 
         print(f"Initializing vLLM engine with model: {model_name}")
@@ -208,14 +214,14 @@ class LLMEngine:
 
                 if isinstance(self.engine, ray.actor.ActorHandle):
                     # for ray engine, we need to use remote call
-                    result_generator = await self.engine.generate_with_stream.remote(
+                    result_generator = self.engine.generate.remote(
                         prompt=request.prompt,
                         sampling_params=sampling_params,
                         request_id=request.llm_internal_id,
                     )
                 else:
                     # for local engine, we can directly call the method
-                    result_generator = await self.engine.generate_with_stream(
+                    result_generator = self.engine.generate(
                         prompt=request.prompt,
                         sampling_params=sampling_params,
                         request_id=request.llm_internal_id,
@@ -235,13 +241,13 @@ class LLMEngine:
             elif request.llm_op_type == NodeOps.LLM_FULL:
                 # Single-node full generation: prefill and decode in one step
                 if isinstance(self.engine, ray.actor.ActorHandle):
-                    result_generator = await self.engine.generate_with_stream.remote(
+                    result_generator = self.engine.generate.remote(
                         prompt=request.prompt,
                         sampling_params=sampling_params,
                         request_id=request.llm_internal_id,
                     )
                 else:
-                    result_generator = await self.engine.generate_with_stream(
+                    result_generator = self.engine.generate(
                         prompt=request.prompt,
                         sampling_params=sampling_params,
                         request_id=request.llm_internal_id,
@@ -497,8 +503,8 @@ if __name__ == "__main__":
         temperature=0.9,
         top_p=0.95,
         max_tokens=max_tokens,
-        support_partial_output=True,
-        support_partial_prefilling=True,
+        # support_partial_output=True,
+        # support_partial_prefilling=True,
     )
     print("max_tokens:", sampling_params.max_tokens)
 

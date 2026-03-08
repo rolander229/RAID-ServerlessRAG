@@ -30,7 +30,7 @@ embed_config = EngineConfig(
     name="embedding_service",
     engine_type=EngineType.EMBEDDER,
     resources={},
-    num_gpus=0.2,
+    num_gpus=0.05,
     num_cpus=1,
     instances=1,
     model_config={**default_embed_config, "device": "cuda"},
@@ -61,11 +61,11 @@ llm_config = EngineConfig(
     name="llm_service",
     engine_type=EngineType.LLM,
     resources={},
-    num_gpus=0.6,
+    num_gpus=0.85,
     num_cpus=1,
     instances=1,
     model_config={
-        "model_name": "openai-community/gpt2",
+        "model_name": "Qwen/Qwen2.5-0.5B",
         "tensor_parallel_size": 1,
         "max_num_seqs": 256,
         "max_queue_size": 1000,
@@ -88,8 +88,8 @@ reranker_config = EngineConfig(
     name="reranker_service",
     engine_type=EngineType.RERANKER,
     resources={},
-    num_gpus=0.2,
-    num_cpus=1,
+    num_gpus=0.1,
+    num_cpus=4,
     instances=1,
     model_config={**default_reranker_config, "device": "cuda"},
     latency_profile={"timeout": 60, "batch_wait": 0.1},
@@ -375,15 +375,20 @@ async def run_app(dag: DAG) -> None:
 
         # wait for all queries to complete
         results = await asyncio.gather(*tasks)
-
+        # Keys: ['Embedding', 'Ingestion', 'QueryEmbedding', 'Search', 'Reranking-sub-0', 'Reranking-sub-1', 'Reranking-aggregator', 'LLMPrefilling', 'LLMDecoding']
         # print results
         for i, result in enumerate(results):
-            print(f"\nQuery {i} results: {result}")
+            print(f"\nQuery {i} results:")
+            print(f"Keys: {list(result.keys())}")
             for key, value in result.items():
-                if "search" in key.lower():
-                    print(f"Search results length: {len(value)}")
-                elif "reranking" in key.lower():
-                    print(f"Reranking results length: {len(value)}")
+                if key not in ['Embedding', 'Ingestion', 'QueryEmbedding', 'Search']:
+                    print(f"{key} output:\n{value}")
+
+            # for key, value in result.items():
+            #     if "search" in key.lower():
+            #         print(f"Search results length: {len(value)}")
+            #     elif "reranking" in key.lower():
+            #         print(f"Reranking results length: {len(value)}")
 
     except Exception as e:
         print(f"Main program error stack:\n{traceback.format_exc()}")
@@ -454,4 +459,4 @@ if __name__ == "__main__":
        dag, f"{args.output_dir}/optimized_dag_for_embedding_ingestion_searching_reranking_llm.png"
     )
 
-    # asyncio.run(run_app(dag))
+    asyncio.run(run_app(dag))
