@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pg-vector-db
+  labels:
+    app: pg-vector-db
+spec:
+  restartPolicy: Never
+  containers:
+  - name: db-container
+    image: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.11-ubuntu22.04-025b
+    ports:
+    - containerPort: 5432
+    resources:
+      requests:
+        memory: "1Gi"
+      limits:
+        memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-vector-service
+spec:
+  selector:
+    app: pg-vector-db
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432

@@ -17,4 +17,4 @@
   - [ ] 单体应用怎么做？==> 单进程运行，或者说不进行前后端拆分，直接在一个进程里运行整个DAG
   - [ ] 单体 => unoptimized => optimized的对比
 - [ ] 推理引擎已经进行了一定程度的前后端分离，前端由graph scheduler负责DAG的调度和执行，后端由engine scheduler负责具体的引擎执行。后续考虑将后端由单机迁移到多pod的场景。或者进一步对前后端都进行重写
-  - [x] 在`origin/faas_deploy` branch中已经使用code agent实现了一个使用nucilo/knative的版本
+  - [x] 在`origin/faas_deploy` branch中已经使用code agent实现了一个使用nucilo/knative的版本 
