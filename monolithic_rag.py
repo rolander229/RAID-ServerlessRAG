@@ -125,6 +125,7 @@ class MonolithicRAG:
 async def main():
     db_config = {
         "host": "localhost",
+        # "host": "pg-vector-service",
         "port": 5432,
         "user": "asplos25",
         "password": "123456",
