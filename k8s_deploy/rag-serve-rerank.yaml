@@ -1,0 +1,52 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rag-rerank-pod
+  labels:
+    app: rag-rerank-pod
+spec:
+  restartPolicy: Never
+  nodeName: dell-65
+  volumes:
+  - name: models-storage
+    persistentVolumeClaim:
+      claimName: models-pvc
+  containers:
+  - name: rag-rerank-pod
+    # CUDA Image
+    # image: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.12-cu12.6.3-2b4f
+    # Non-CUDA Image
+    image: gpu-harbor.act.buaa.edu.cn/user-huangsy/envd:py3.11-ubuntu22.04-025b
+    imagePullPolicy: IfNotPresent
+    # ports:
+    # - containerPort: 8000
+    #   name: http
+    # - containerPort: 22
+    #   name: ssh
+    env:
+    - name: HF_ENDPOINT
+      value: "https://hf-mirror.com"
+    - name: HF_HOME                          # HF 所有缓存根目录
+      value: "/models/huggingface"
+    - name: TRANSFORMERS_CACHE               # 兼容老版本 transformers
+      value: "/models/huggingface/hub"
+    volumeMounts:
+    - name: models-storage
+      mountPath: /models
+    # resources:
+    #   limits:
+    #     nvidia.com/gpu: "1"
+    #   requests:
+    #     nvidia.com/gpu: "1"
