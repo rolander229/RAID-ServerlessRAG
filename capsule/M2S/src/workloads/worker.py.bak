@@ -1,0 +1,153 @@
+"""One serverless function == one long-lived worker process.
+
+The runtime starts this via ``subprocess`` rather than ``fork``: forking a
+process that already holds a CUDA context is unsafe, and a fresh interpreter is
+also what a real FaaS cold start looks like. The process then stays warm and is
+driven over a Unix socket, so the *first* invocation carries the real model-load
+cost and later ones do not.
+
+Protocol (multiprocessing.connection framing):
+    worker -> driver : ("ready", pid)
+    driver -> worker : {"ops": [...], "inbound": {k: bytes}, "outbound": [k]}
+    worker -> driver : {"ms": f, "out": {k: bytes}, "rss_mb": f, "vm_mb": f}
+    driver -> worker : None      -> worker exits
+
+Run by the runtime only:
+    python -m workloads.worker <pipeline_key> <socket_path>
+"""
+import os
+import resource
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from multiprocessing.connection import Client  # noqa: E402
+
+AUTHKEY = b"m2s-runtime"
+
+
+def _peak_rss_mb():
+    """VmHWM: peak resident set size, in MB."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+
+def _gpu_peak_mb():
+    """Peak CUDA memory of this process, in MB: (allocated, reserved).
+
+    RSS and VRAM are different pools and the distinction decides the whole
+    "does splitting help?" question. A Lambda-style RSS ceiling cannot see
+    weights that live in VRAM, so for a GPU-resident stage the RSS ceiling is
+    not the binding constraint at all; a per-function GPU quota would be. We
+    report both so neither claim has to be taken on faith.
+
+    The ``is_initialized()`` guard is load-bearing: ``torch.cuda.is_available()``
+    *initialises* CUDA, which would add a CUDA context (~200 MB) to the RSS of
+    CPU-only functions and silently inflate every memory number we report.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return 0.0, 0.0
+        d = torch.cuda.current_device()
+        return (torch.cuda.max_memory_allocated(d) / 1048576.0,
+                torch.cuda.max_memory_reserved(d) / 1048576.0)
+    except Exception:
+        return 0.0, 0.0
+
+
+def main():
+    key = sys.argv[1]
+    addr = sys.argv[2]
+    mem_mb = 0
+    label = "fn"
+    for i, a in enumerate(sys.argv):
+        if a == "--mem-mb" and i + 1 < len(sys.argv):
+            mem_mb = int(sys.argv[i + 1])
+        if a == "--label" and i + 1 < len(sys.argv):
+            label = sys.argv[i + 1]
+
+    conn = Client(addr, authkey=AUTHKEY)
+
+    # Imported inside the function so that "spawn -> ready" measured by the
+    # driver covers interpreter start plus the framework import, i.e. the part
+    # of a cold start that happens before the first request.
+    from workloads import payload as P  # noqa: E402
+    from workloads.pipes import build  # noqa: E402
+    from workloads.util import sync  # noqa: E402
+
+    p = build(key)
+    # MUST be the pipeline's own state dict: the operator closures write into
+    # it. Using a separate dict here silently makes every boundary carry zero
+    # bytes, which is how this bug first showed up.
+    state = p.state
+
+    if mem_mb:
+        # NOTE: RLIMIT_AS caps *virtual* address space. A CUDA process maps tens
+        # of GB of VA, so this is a coarse backstop, not a faithful emulation of
+        # a FaaS memory ceiling. Real accounting is VmHWM below; the runtime
+        # treats a ceiling breach as a reported violation, not a kill.
+        try:
+            lim = int(mem_mb) * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+        except Exception as e:
+            print("[worker] setrlimit failed: %s" % str(e)[:80],
+                  file=sys.stderr)
+
+    conn.send(("ready", os.getpid()))
+
+    while True:
+        try:
+            msg = conn.recv()
+        except EOFError:
+            break
+        if msg is None:
+            break
+
+        t0 = time.perf_counter()
+        for k, buf in msg["inbound"].items():
+            state[k] = P.decode(buf)
+        t_dec = (time.perf_counter() - t0) * 1000.0
+
+        c0 = time.perf_counter()
+        p.run_ops(msg["ops"])
+        sync()
+        t_cmp = (time.perf_counter() - c0) * 1000.0
+
+        e0 = time.perf_counter()
+        out = {}
+        for k in msg["outbound"]:
+            if k not in state:
+                raise KeyError(
+                    "outbound key %r missing after running %s; the operator "
+                    "declared in pipes.py does not actually write it"
+                    % (k, msg["ops"]))
+            out[k] = P.encode(state[k])
+        t_enc = (time.perf_counter() - e0) * 1000.0
+
+        g_alloc, g_res = _gpu_peak_mb()
+        conn.send({
+            "ms": (time.perf_counter() - t0) * 1000.0,
+            "decode_ms": t_dec,
+            "compute_ms": t_cmp,
+            "encode_ms": t_enc,
+            "out": out,
+            "rss_mb": round(_peak_rss_mb(), 2),
+            "vm_mb": round(resource.getrusage(
+                resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2),
+            "gpu_mb": round(g_alloc, 2),
+            "gpu_reserved_mb": round(g_res, 2),
+        })
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()

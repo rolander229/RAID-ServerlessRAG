@@ -1,0 +1,101 @@
+{
+  "batch": 4,
+  "floor_mb": 511.56640625,
+  "stages": [
+    {
+      "idx": 0,
+      "param_mb": 147.93,
+      "load_s": 0.168,
+      "fwd_ms": 81.7,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 837.97
+    },
+    {
+      "idx": 1,
+      "param_mb": 144.15,
+      "load_s": 0.162,
+      "fwd_ms": 78.2,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.21
+    },
+    {
+      "idx": 2,
+      "param_mb": 144.15,
+      "load_s": 0.162,
+      "fwd_ms": 78.8,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.53
+    },
+    {
+      "idx": 3,
+      "param_mb": 144.15,
+      "load_s": 0.162,
+      "fwd_ms": 78.2,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.48
+    },
+    {
+      "idx": 4,
+      "param_mb": 144.15,
+      "load_s": 0.161,
+      "fwd_ms": 75.1,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.55
+    },
+    {
+      "idx": 5,
+      "param_mb": 144.15,
+      "load_s": 0.162,
+      "fwd_ms": 78.5,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.46
+    },
+    {
+      "idx": 6,
+      "param_mb": 144.15,
+      "load_s": 0.161,
+      "fwd_ms": 76.1,
+      "out_shape": [
+        4,
+        197,
+        1024
+      ],
+      "stage_mb": 830.51
+    },
+    {
+      "idx": 7,
+      "param_mb": 148.07,
+      "load_s": 0.173,
+      "fwd_ms": 82.9,
+      "out_shape": [
+        4,
+        1000
+      ],
+      "stage_mb": 838.92
+    }
+  ]
+}

@@ -1,0 +1,333 @@
+"""Local FaaS runtime: execute a partition plan as real, separate processes.
+
+This is the ground truth the old optimizer never had. A plan is a list of
+fusion groups; each group becomes its own OS process (see ``worker.py``), and
+every cut between groups pays a real serialisation + object-store hop.
+
+What is real here:
+  * one OS process per function      -> isolation, per-function peak RSS
+  * a real encode/decode round trip  -> wire-format bytes, not tensor.nbytes
+  * a real tmpfs write/read per hop  -> bytes actually leave the process
+  * a real cold start                -> spawn + first-call model load
+  * a real timeout                   -> the worker is killed, not merely flagged
+
+What is NOT real, and must be stated in any write-up:
+  * the hop is tmpfs, not a network. There is no WAN RTT, no TLS, no S3.
+    The measured hop cost is therefore a *lower bound* on a real deployment.
+  * a memory ceiling is measured (VmHWM) and reported as a violation, not
+    enforced by the kernel, because RLIMIT_AS is meaningless for CUDA
+    processes which map tens of GB of virtual address space.
+
+Usage:
+    from workloads.runtime import compile_plan, LocalFaaSRuntime
+    plan = compile_plan(pipeline, [["op1","op2"], ["op3"]])
+    rt = LocalFaaSRuntime()
+    res = rt.invoke(plan)
+"""
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from multiprocessing.connection import Listener
+from typing import Dict, List, Optional
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from workloads.pipes import Pipeline  # noqa: E402
+
+AUTHKEY = b"m2s-runtime"
+ROOT = os.environ.get("M2S_ROOT", os.getcwd())
+SPOOL = os.environ.get("M2S_SPOOL", "/dev/shm/m2s-spool")
+
+
+@dataclass
+class FunctionSpec:
+    name: str
+    ops: List[str]
+    inbound: List[str] = field(default_factory=list)
+    outbound: List[str] = field(default_factory=list)
+    memory_mb: int = 3008
+    # Per-function VRAM quota. 0 means "no GPU ceiling declared". This is a
+    # separate constraint from the RSS ceiling because the two observe
+    # different pools: an RSS ceiling cannot see weights that live in VRAM.
+    gpu_memory_mb: int = 0
+    timeout_s: float = 60.0
+    device: str = "CPU"
+
+    @property
+    def n_ops(self) -> int:
+        return len(self.ops)
+
+
+@dataclass
+class Plan:
+    pipeline: str
+    functions: List[FunctionSpec]
+
+    def n_functions(self) -> int:
+        return len(self.functions)
+
+    def group_of(self, op: str) -> int:
+        for i, f in enumerate(self.functions):
+            if op in f.ops:
+                return i
+        return -1
+
+    def render(self) -> str:
+        out = []
+        for i, f in enumerate(self.functions, 1):
+            out.append("  f%d %-26s %-4s mem=%-5d timeout=%-4gs ops=%s"
+                       % (i, f.name, f.device, f.memory_mb, f.timeout_s,
+                          ",".join(f.ops)))
+        return "\n".join(out)
+
+
+def compile_plan(p: Pipeline, groups: List[List[str]], memory_mb: int = 3008,
+                 timeout_s: float = 60.0, gpu_memory_mb: int = 0) -> Plan:
+    """Turn a partition of operator names into a runnable plan.
+
+    Inbound/outbound key sets are derived from the operators' declared I/O, so
+    the plan says exactly which values cross each boundary.
+    """
+    flat = [n for g in groups for n in g]
+    assert sorted(flat) == sorted(p.names()), \
+        "plan must cover every operator exactly once"
+
+    funcs: List[FunctionSpec] = []
+    produced_before: set = set()
+    for gi, g in enumerate(groups):
+        have: set = set()
+        inbound: List[str] = []
+        writes: List[str] = []
+        for n in g:
+            o = p.by_name(n)
+            for r in o.reads:
+                if r not in have and r in produced_before and r not in inbound:
+                    inbound.append(r)
+            for w in o.writes:
+                have.add(w)
+                if w not in writes:
+                    writes.append(w)
+        devs = {p.by_name(n).device for n in g}
+        funcs.append(FunctionSpec(
+            name=("%s-%s" % (g[0], "fused" if len(g) > 1 else "fn")),
+            ops=list(g),
+            inbound=sorted(inbound),
+            outbound=[],
+            memory_mb=memory_mb,
+            gpu_memory_mb=gpu_memory_mb,
+            timeout_s=timeout_s,
+            device="GPU" if "GPU" in devs else "CPU",
+        ))
+        produced_before |= have
+
+    for i, f in enumerate(funcs):
+        later: set = set()
+        for g2 in funcs[i + 1:]:
+            later |= set(g2.inbound)
+        f.outbound = sorted(set(_writes_of(p, f.ops)) & later)
+    return Plan(pipeline=p.key, functions=funcs)
+
+
+def _writes_of(p: Pipeline, ops: List[str]) -> List[str]:
+    out: List[str] = []
+    for n in ops:
+        for w in p.by_name(n).writes:
+            if w not in out:
+                out.append(w)
+    return out
+
+
+class Worker:
+    """A warm serverless function process."""
+
+    def __init__(self, key: str, label: str = "fn", rlimit_mb: int = 0,
+                 log=None, logdir: Optional[str] = None):
+        self.key = key
+        self.label = label
+        self.dir = tempfile.mkdtemp(prefix="m2s-")
+        self.addr = os.path.join(self.dir, "s.sock")
+        self.listener = Listener(self.addr, family="AF_UNIX", authkey=AUTHKEY)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.path.join(ROOT, "M2S", "src")
+        env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        logdir = logdir or os.path.join(ROOT, "workloads_data", "workerlogs")
+        os.makedirs(logdir, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+        self.log_path = os.path.join(
+            logdir, "%s-%s-%d.log"
+            % (key, safe[:40], int(time.time() * 1000) % 10 ** 8))
+        self.log = log or open(self.log_path, "wb")
+        t0 = time.perf_counter()
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "workloads.worker", key, self.addr,
+             "--label", label, "--mem-mb", str(rlimit_mb)],
+            cwd=ROOT, env=env, stdout=self.log, stderr=subprocess.STDOUT)
+        self.conn = self.listener.accept()
+        tag, self.pid = self.conn.recv()
+        self.spawn_ms = (time.perf_counter() - t0) * 1000.0
+        self.n_calls = 0
+
+    def call(self, ops, inbound, outbound, timeout_s=60.0) -> dict:
+        self.conn.send({"ops": ops, "inbound": inbound, "outbound": outbound})
+        if not self.conn.poll(timeout_s):
+            self.kill()
+            raise TimeoutError("function %s exceeded %.1fs"
+                               % (self.key, timeout_s))
+        self.n_calls += 1
+        try:
+            return self.conn.recv()
+        except (EOFError, ConnectionResetError, BrokenPipeError):
+            # A worker that dies mid-send leaves the socket reset rather than
+            # cleanly closed, and recv() reports that as ConnectionResetError.
+            # Catching only EOFError turns a diagnosable crash into a bare
+            # traceback with no function name and no worker log.
+            self.kill()
+            raise RuntimeError("function %s died. log tail:\n%s"
+                               % (self.key, self.log_tail()))
+
+    def log_tail(self, n=2500) -> str:
+        try:
+            self.log.flush()
+            with open(self.log_path, "rb") as fh:
+                return fh.read()[-n:].decode("utf-8", "replace")
+        except Exception as e:
+            return "<no log: %s>" % e
+
+    def kill(self):
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self.conn.send(None)
+            self.conn.close()
+        except Exception:
+            pass
+        self.kill()
+        try:
+            self.listener.close()
+        except Exception:
+            pass
+
+
+class LocalFaaSRuntime:
+    def __init__(self, root: Optional[str] = None, spool: Optional[str] = None):
+        self.root = root or ROOT
+        self.spool = spool or SPOOL
+        os.makedirs(self.spool, exist_ok=True)
+        self.workers: Dict[str, Worker] = {}
+        self.cold_start_ms: Dict[str, float] = {}
+
+    def _worker(self, plan: Plan, f: FunctionSpec,
+                rlimit_mb: int) -> Worker:
+        if f.name not in self.workers:
+            w = Worker(plan.pipeline, label=f.name, rlimit_mb=rlimit_mb)
+            self.workers[f.name] = w
+            self.cold_start_ms[f.name] = w.spawn_ms
+        return self.workers[f.name]
+
+    def invoke(self, plan: Plan, rlimit_mb: int = 0,
+               timeout_s: float = 60.0,
+               capture: Optional[List[str]] = None) -> dict:
+        """One end-to-end request through the function graph.
+
+        ``rlimit_mb`` defaults to 0 = do not touch RLIMIT_AS. Leave it at 0
+        unless you know what you are doing: a CUDA process maps tens of GB of
+        virtual address space, so capping RLIMIT_AS kills it outright. The
+        declared per-function ceiling lives in ``FunctionSpec.memory_mb`` and is
+        checked against the measured ``rss_mb`` instead.
+
+        ``capture`` names intermediate values that the driver wants back, so a
+        partitioned run can be checked against a monolithic reference. It is
+        implemented by *appending* those keys to the last function's outbound
+        set, which means the function performs an extra encode. Use it on a
+        dedicated accuracy pass, never on a timing pass -- the added encode is
+        real work and would contaminate the latency numbers.
+
+        A monolith plan has an empty outbound set (nothing downstream needs its
+        values), so without ``capture`` its results never leave the worker. That
+        is intentional: a deployed monolith would not pay that encode either.
+        """
+        wire: Dict[str, bytes] = {}
+        rows: List[dict] = []
+        t_req = time.perf_counter()
+
+        if capture and plan.functions:
+            last = plan.functions[-1]
+            last.outbound = sorted(set(last.outbound) | set(capture))
+
+        for f in plan.functions:
+            w = self._worker(plan, f, rlimit_mb)
+
+            hop0 = time.perf_counter()
+            inbound = {}
+            hop_bytes = 0
+            for k in f.inbound:
+                buf = wire.get(k, b"")
+                p = os.path.join(self.spool, "%s.%s.bin" % (f.name, k))
+                with open(p, "wb") as fh:
+                    fh.write(buf)
+                with open(p, "rb") as fh:
+                    inbound[k] = fh.read()
+                hop_bytes += len(buf)
+            hop_ms = (time.perf_counter() - hop0) * 1000.0
+
+            t0 = time.perf_counter()
+            try:
+                r = w.call(f.ops, inbound, f.outbound, timeout_s)
+            except TimeoutError as e:
+                return {"pipeline": plan.pipeline, "timeout": str(e),
+                        "rows": rows, "n_functions": plan.n_functions()}
+            r["wall_ms"] = (time.perf_counter() - t0) * 1000.0
+            for k, buf in r["out"].items():
+                wire[k] = buf
+
+            rows.append({
+                "function": f.name,
+                "device": f.device,
+                "n_ops": f.n_ops,
+                "ops": f.ops,
+                "pid": w.pid,
+                "compute_ms": round(r["compute_ms"], 3),
+                "decode_ms": round(r["decode_ms"], 3),
+                "encode_ms": round(r["encode_ms"], 3),
+                "wall_ms": round(r["wall_ms"], 3),
+                "in_mb": round(hop_bytes / 1048576.0, 4),
+                "out_mb": round(sum(len(b) for b in r["out"].values())
+                                / 1048576.0, 4),
+                "hop_ms": round(hop_ms, 3),
+                "rss_mb": r["rss_mb"],
+                "gpu_mb": r.get("gpu_mb", 0.0),
+                "gpu_reserved_mb": r.get("gpu_reserved_mb", 0.0),
+                "mem_ceiling_mb": f.memory_mb,
+                "mem_ok": r["rss_mb"] <= f.memory_mb,
+                "gpu_ceiling_mb": f.gpu_memory_mb,
+                "mem_ok_gpu": (f.gpu_memory_mb <= 0
+                               or r.get("gpu_mb", 0.0) <= f.gpu_memory_mb),
+                "cold_start_ms": round(self.cold_start_ms.get(f.name, 0.0), 1),
+            })
+
+        total_ms = (time.perf_counter() - t_req) * 1000.0
+        res = {
+            "pipeline": plan.pipeline,
+            "n_functions": plan.n_functions(),
+            "e2e_ms": round(total_ms, 3),
+            "rows": rows,
+            "wire_total_mb": round(sum(len(b) for b in wire.values())
+                                   / 1048576.0, 4),
+        }
+        if capture:
+            from workloads import payload as P
+            res["captured"] = {k: P.decode(wire[k]) for k in capture
+                               if k in wire}
+        return res
+
+    def shutdown(self):
+        for w in self.workers.values():
+            w.close()
+        self.workers.clear()

@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CloudNativeAlgorithmFunctionTemplateSchema",
+  "description": "Standard schema for cloud-native AI/DL algorithm function encapsulation template",
+  "type": "object",
+  "required": [
+    "function_name",
+    "runtime",
+    "trigger_type",
+    "handler_entry",
+    "interface_contract",
+    "execution_model"
+  ],
+  "properties": {
+    "function_name": {
+      "type": "string",
+      "description": "Unique identifier for the encapsulated FaaS function"
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["python3.11", "python3.12", "nodejs20.x", "nodejs22.x"],
+      "default": "python3.12"
+    },
+    "trigger_type": {
+      "type": "string",
+      "enum": ["api_gateway", "sqs", "eventbridge", "cron", "direct_invoke"],
+      "description": "Invocation trigger mechanism"
+    },
+    "handler_entry": {
+      "type": "string",
+      "default": "handler.lambda_handler"
+    },
+    "auth_type": {
+      "type": "string",
+      "enum": ["cognito", "jwt", "iam", "none"],
+      "default": "cognito"
+    },
+    "interface_contract": {
+      "type": "object",
+      "required": ["http_method", "route_path", "input_schema", "output_schema"],
+      "properties": {
+        "http_method": {
+          "type": ["string", "null"],
+          "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", null]
+        },
+        "route_path": {
+          "type": ["string", "null"]
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      }
+    },
+    "execution_model": {
+      "type": "string",
+      "enum": ["synchronous_worker", "async_orchestrator", "queue_worker_consumer", "event_consumer"],
+      "description": "Algorithm execution role in the distributed serverless architecture"
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "memory_mb": {"type": "integer", "default": 512},
+        "timeout_seconds": {"type": "integer", "default": 30},
+        "environment_variables": {"type": "object"}
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "shared_layers": {"type": "array", "items": {"type": "string"}},
+        "third_party_packages": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

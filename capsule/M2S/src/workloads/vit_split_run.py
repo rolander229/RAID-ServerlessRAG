@@ -1,0 +1,462 @@
+"""Gillis-style cost/latency trade-off on ViT-L/16, every point measured.
+
+The question this answers
+-------------------------
+Gillis (ICDCS'21) partitions a large model across bounded-memory functions and
+trades cost against latency by choosing where to cut. This driver reproduces
+that trade-off with real subprocesses, real shard files and a real wire format,
+on a model big enough for the trade-off to exist at all.
+
+Why ViT-L/16 and not a ResNet
+-----------------------------
+Splitting only saves money because serverless bills ``tier_GB x seconds`` and
+the tiers are discrete. A split that does not push a function across a tier
+boundary saves exactly nothing. ResNet-152's 241 MB of weights cannot move a
+1+ GB function floor, so every resnet layout lands in the same tier and the
+"trade-off" is flat. ViT-L/16 is 1161 MB in 24 near-uniform 48 MB blocks:
+the monolith needs a 3072 MB tier, a single-block function fits 1024 MB.
+
+What is measured, per layout
+----------------------------
+  * per-function peak RSS (VmHWM in its own process) -> the billed memory tier
+  * per-function warm wall time (decode + compute + encode)
+  * warm end-to-end latency (median of N passes)
+  * cold end-to-end latency and per-function init (spawn + first-load)
+  * bytes crossing every boundary
+  * top-1 agreement with a monolithic reference, to price the accuracy cost
+
+What is modelled, not measured
+------------------------------
+  * the price: AWS-Lambda-shaped ``GB-s x $1.66667e-5``. Only the *shape*
+    matters for the comparison -- every layout is priced with the same formula.
+  * the hop: the runtime's boundary is tmpfs, so the measured hop is a lower
+    bound on a real network hop. Stated, not hidden.
+  * cold-start amortisation: parametrised by how many requests one warm
+    instance serves before it is recycled. Reported for several values rather
+    than assuming one.
+
+Run (from the repository root):
+    PYTHONPATH=M2S/src OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 \
+      .venv/bin/python -u -m workloads.vit_split_run
+"""
+import json
+import os
+import statistics
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from workloads import payload, pipes, pipe_e  # noqa: E402
+from workloads.runtime import (LocalFaaSRuntime, compile_plan,  # noqa: E402
+                               pin_supervisor)
+
+KEY = "vit_partition"
+CEILING_MAX = 10240
+TIMEOUT_S = float(os.environ.get("M2S_VIT_TIMEOUT", "900"))
+REPS = int(os.environ.get("M2S_VIT_REPS", "5"))
+
+# AWS-Lambda staircase, in MB. Also used as the ceiling sweep grid.
+TIERS = [128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240]
+PRICE_GB_S = 0.0000166667          # $ per GB-second, x86, us-east-1
+REUSE_FACTORS = [1, 10, 100]
+
+# Layouts, expressed as "how many encoder-block groups each function holds".
+# Contiguous by construction: a function can only hold a contiguous run of
+# blocks if it is to load a self-contained shard. ``light`` says whether the
+# four non-model operators ride along with the first/last model function or get
+# functions of their own -- see ``pipe_e.groups_from_sizes`` for why that is a
+# tier-level decision and not a detail.
+SIZES = {
+    "V1_monolith": {"sizes": [8]},
+    "V2_balanced": {"sizes": [4, 4]},
+    "V3_balanced": {"sizes": [3, 3, 2]},
+    "V4_balanced": {"sizes": [2, 2, 2, 2]},
+    "V5_balanced": {"sizes": [2, 2, 2, 1, 1]},
+    "V6_balanced": {"sizes": [2, 2, 1, 1, 1, 1]},
+    "V8_fission": {"sizes": [1, 1, 1, 1, 1, 1, 1, 1]},
+    # Same function count as V2, different cut position: isolates the effect of
+    # *where* you cut from *how often* you cut.
+    "V2_cut1": {"sizes": [1, 7]},
+    "V2_cut2": {"sizes": [2, 6]},
+    "V2_cut3": {"sizes": [3, 5]},
+    "V3_lopsided": {"sizes": [1, 1, 6]},
+    # Light operators as their own functions. Two more functions, but the model
+    # functions lose the decode/top-k buffers that were pushing them over the
+    # 1024 MB tier.
+    "V4_lightsep": {"sizes": [2, 2, 2, 2], "light": "separate"},
+    "V5_lightsep": {"sizes": [2, 2, 1, 1, 1, 1], "light": "separate"},
+}
+
+
+# --------------------------------------------------------------------- pricing
+def tier_of(rss_mb):
+    """Smallest billable tier that covers a measured peak resident set."""
+    for t in TIERS:
+        if rss_mb <= t:
+            return t
+    return TIERS[-1]
+
+
+def _median(xs, default=0.0):
+    xs = [x for x in xs if x is not None]
+    return statistics.median(xs) if xs else default
+
+
+def _torch_version():
+    try:
+        import torch
+        return torch.__version__
+    except Exception:
+        return "unavailable"
+
+
+# ----------------------------------------------------------------- measurement
+def measure(label, sizes, light="ride", reps=REPS, verbose=True):
+    groups = pipe_e.groups_from_sizes(sizes, light=light)
+    p = pipes.build(KEY)
+    plan = compile_plan(p, groups, memory_mb=CEILING_MAX, timeout_s=TIMEOUT_S)
+    rt = LocalFaaSRuntime()
+    try:
+        # ---- cold pass: fresh workers, so this carries every function's spawn
+        # plus its first shard load. Kept separate from the warm numbers because
+        # folding a one-off init into steady-state latency would misprice every
+        # split -- and because the init is exactly what the split multiplies.
+        t0 = time.perf_counter()
+        cold = rt.invoke(plan, timeout_s=TIMEOUT_S)
+        cold_e2e = (time.perf_counter() - t0) * 1000.0
+        if cold.get("timeout"):
+            raise TimeoutError(cold["timeout"])
+
+        t0 = time.perf_counter()
+        warm = [rt.invoke(plan, timeout_s=TIMEOUT_S) for _ in range(reps)]
+        warm_wall = (time.perf_counter() - t0) * 1000.0
+        for w in warm:
+            if w.get("timeout"):
+                raise TimeoutError(w["timeout"])
+
+        # ---- accuracy pass. Separate from timing on purpose: asking the last
+        # function for its value appends an encode that a real deployment would
+        # not do, so mixing it into the timing pass would inflate that
+        # function's wall time.
+        acc = rt.invoke(plan, timeout_s=TIMEOUT_S,
+                        capture=["h%d" % (pipe_e.GROUPS - 1)])
+    finally:
+        rt.shutdown()
+
+    n = len(cold["rows"])
+    fns = []
+    for i in range(n):
+        cr, wr = cold["rows"][i], [w["rows"][i] for w in warm]
+        init_ms = cr["cold_start_ms"] + cr["wall_ms"]   # spawn + first call
+        fns.append({
+            "index": i,
+            "name": cr["function"],
+            "n_ops": cr["n_ops"],
+            "stages": [o for o in cr["ops"] if o.startswith("vit_stage")],
+            "rss_mb": cr["rss_mb"],
+            "tier_mb": tier_of(cr["rss_mb"]),
+            "spawn_ms": cr["cold_start_ms"],
+            "init_ms": round(init_ms, 1),
+            "cold_compute_ms": cr["compute_ms"],
+            "compute_ms": round(_median([x["compute_ms"] for x in wr]), 3),
+            "decode_ms": round(_median([x["decode_ms"] for x in wr]), 3),
+            "encode_ms": round(_median([x["encode_ms"] for x in wr]), 3),
+            "wall_ms": round(_median([x["wall_ms"] for x in wr]), 3),
+            "in_mb": cr["in_mb"],
+            "out_mb": cr["out_mb"],
+            "hop_ms": cr["hop_ms"],
+            "rss_private_mb": cr.get("rss_private_mb"),
+            "shared_file_mb": cr.get("shared_file_mb", 0.0),
+        })
+
+    e2e = [w["e2e_ms"] for w in warm]
+    res = {
+        "layout": label,
+        "sizes": sizes,
+        "light": light,
+        "n_functions": n,
+        "n_boundaries": n - 1,
+        "functions": fns,
+        "latency_ms": round(_median(e2e), 3),
+        "latency_min_ms": round(min(e2e), 3),
+        "latency_max_ms": round(max(e2e), 3),
+        "latency_cold_ms": round(cold_e2e, 3),
+        "spawn_sum_ms": round(sum(f["spawn_ms"] for f in fns), 1),
+        "init_sum_ms": round(sum(f["init_ms"] for f in fns), 1),
+        "wire_total_mb": warm[0]["wire_total_mb"],
+        "max_rss_mb": round(max(f["rss_mb"] for f in fns), 2),
+        "rss_sum_mb": round(sum(f["rss_mb"] for f in fns), 2),
+        "max_tier_mb": max(f["tier_mb"] for f in fns),
+        "est_tier_sum_mb": sum(f["tier_mb"] for f in fns),
+        "captured": acc.get("captured", {}),
+        # Provenance for the two start paths: how these functions were started,
+        # whether the pre-fork path had to be abandoned, and how much of each
+        # function's rss_mb is shared framework pages added back by the runtime.
+        "spawn_mode": (cold.get("spawn_mode")
+                       or os.environ.get("M2S_SPAWN", "subprocess").lower()),
+        "spawn_fallback": cold.get("spawn_fallback"),
+        "rss_correction_mb": cold.get("rss_correction_mb", 0.0),
+    }
+
+    if verbose:
+        print("  %-14s fns=%d  warm=%8.1fms cold=%9.1fms maxrss=%7.1fMB "
+              "tier=%5dMB wire=%5.2fMB"
+              % (label, n, res["latency_ms"], res["latency_cold_ms"],
+                 res["max_rss_mb"], res["max_tier_mb"], res["wire_total_mb"]))
+    return res
+
+
+# ------------------------------------------------------------------------ cost
+def cost_per_request(res, reuse=None):
+    """Modelled $ per request.
+
+    ``reuse=None`` prices the warm steady state only: every function is already
+    initialised, so the bill is ``tier_GB x duration`` per function. With a
+    finite ``reuse`` the one-off init is amortised over that many requests,
+    which is what turns "one extra function" from a free tier reduction into a
+    real cost.
+    """
+    total = 0.0
+    for f in res["functions"]:
+        gb = f["tier_mb"] / 1024.0
+        total += gb * PRICE_GB_S * (f["wall_ms"] / 1000.0)
+        if reuse:
+            total += gb * PRICE_GB_S * (f["init_ms"] / 1000.0) / float(reuse)
+    return total
+
+
+def gb_seconds(res):
+    return sum((f["tier_mb"] / 1024.0) * (f["wall_ms"] / 1000.0)
+               for f in res["functions"])
+
+
+# ------------------------------------------------------------------- reference
+def reference_logits():
+    """The monolith's output for the pipeline's own input.
+
+    Computed once, in the driver, from the real ``vit_l_16`` forward -- i.e.
+    from code that knows nothing about our stage carving. That independence is
+    the point: comparing the split against our own staged reference would only
+    prove the reference agrees with itself.
+    """
+    import torch
+    from torchvision.models import ViT_L_16_Weights, vit_l_16
+
+    p = pipes.build(KEY)
+    p.run_ops(["vit_ingest", "vit_preprocess"])
+    x = p.state["x"]
+    t0 = time.perf_counter()
+    full = vit_l_16(weights=ViT_L_16_Weights.IMAGENET1K_V1).eval()
+    with torch.no_grad():
+        ref = full(x)
+    return ref, x, time.perf_counter() - t0
+
+
+def compare(ref, got):
+    if got is None or not hasattr(got, "shape") or got.shape != ref.shape:
+        return {"ok": False, "note": "missing or mis-shaped output"}
+    d = (ref - got).abs()
+    return {
+        "ok": bool(torch_equal_argmax(ref, got)),
+        "max_abs_diff": round(float(d.max()), 6),
+        "mean_abs_diff": round(float(d.mean()), 6),
+        "rel_max_diff": round(float(d.max() / max(ref.abs().max(), 1e-9)), 6),
+        "top1_ref": int(ref.argmax(1)[0]),
+        "top1_got": int(got.argmax(1)[0]),
+    }
+
+
+def torch_equal_argmax(a, b):
+    return bool((a.argmax(1) == b.argmax(1)).all())
+
+
+# ------------------------------------------------------------------------ sweep
+def ceiling_sweep(runs):
+    """Coarsest (fewest-function) layout that fits each ceiling.
+
+    This is Gillis's actual objective -- minimise the number of functions
+    subject to the memory bound -- recovered from measurements rather than
+    assumed from a formula.
+    """
+    table = {}
+    for c in TIERS:
+        best = None
+        for label, r in runs.items():
+            if r["max_rss_mb"] <= c:
+                n = r["n_functions"]
+                if best is None or n < best[1]:
+                    best = (label, n, r["max_rss_mb"])
+        table[str(c)] = ({"layout": best[0], "n_functions": best[1],
+                          "max_rss_mb": best[2]} if best else None)
+    return table
+
+
+def pareto(runs, key_cost="cost_usd", key_lat="latency_ms"):
+    """Layouts not dominated on (cost, latency)."""
+    items = [(l, r[key_cost], r[key_lat]) for l, r in runs.items()]
+    front = []
+    for a in items:
+        if any(b[1] <= a[1] and b[2] <= a[2] and (b[1] < a[1] or b[2] < a[2])
+               for b in items):
+            continue
+        front.append(a)
+    return sorted(front, key=lambda x: x[1])
+
+
+def main():
+    # The supervisor must never run a parallel region. In pre-fork mode it forks
+    # every worker, and a fork out of a process whose OpenMP pool has already
+    # executed work leaves the child holding locks whose owners are gone --
+    # observed here as a wedged sweep that produced no layout output at all.
+    # ``runtime.pin_supervisor`` records the measurement. Pinned in *both* start
+    # paths so the monolithic reference is computed the same way in each and the
+    # two sweeps stay comparable; workers are unaffected, they read their own
+    # thread count from the environment.
+    pin_supervisor()
+
+    only = [x for x in os.environ.get("M2S_VIT_LAYOUTS", "").split(",") if x]
+    layouts = {k: v for k, v in SIZES.items() if not only or k in only}
+
+    print("ViT-L/16 cost/latency trade-off  (batch=%d, reps=%d, tiers=Lambda)"
+          % (pipe_e.BATCH, REPS))
+    print("stage operators: %d x %d blocks, %.2f MB weights each, "
+          "%.2f MB per boundary"
+          % (pipe_e.GROUPS, pipe_e.BLOCKS_PER_GROUP,
+             pipe_e.stage_param_mb(1), pipe_e.activation_mb()))
+    print()
+
+    pipe_e.ensure_shards(verbose=False)
+    ref, x, ref_s = reference_logits()
+    print("monolithic reference computed in %.1fs, out=%s\n"
+          % (ref_s, tuple(ref.shape)))
+
+    runs = {}
+    for label, spec in layouts.items():
+        t0 = time.time()
+        try:
+            r = measure(label, spec["sizes"], light=spec.get("light", "ride"))
+        except Exception as e:
+            print("  %-14s FAILED %s: %s"
+                  % (label, type(e).__name__, str(e)[:150]))
+            continue
+        got = r.pop("captured", {}).get("h%d" % (pipe_e.GROUPS - 1))
+        r["accuracy"] = compare(ref, got)
+        r["cost_usd"] = cost_per_request(r, reuse=None)
+        r["cost_usd_reuse"] = {str(k): cost_per_request(r, reuse=k)
+                               for k in REUSE_FACTORS}
+        r["gb_seconds"] = gb_seconds(r)
+        r["steps"] = [(f["index"], f["name"], f["n_ops"], f["stages"],
+                       f["tier_mb"], round(f["wall_ms"], 1),
+                       round(f["init_ms"], 1)) for f in r["functions"]]
+        runs[label] = r
+        print("        cost=%.4f u$/req (reuse1=%.4f) gbs=%.4f "
+              "top1ok=%s maxdiff=%.4f  (%.0fs)"
+              % (r["cost_usd"] * 1e6, r["cost_usd_reuse"]["1"] * 1e6,
+                 r["gb_seconds"], r["accuracy"]["ok"],
+                 r["accuracy"].get("max_abs_diff", -1), time.time() - t0))
+
+    if "V1_monolith" not in runs:
+        print("\nno monolith baseline measured; nothing to compare against")
+        return 2
+
+    base = runs["V1_monolith"]
+    print("\n" + "=" * 78)
+    print("per-function detail")
+    print("=" * 78)
+    print("  %-14s %-16s %3s %9s %8s %8s %8s %8s"
+          % ("layout", "function", "ops", "rss_mb", "tier", "wall", "init", "hops"))
+    for label, r in runs.items():
+        for f in r["functions"]:
+            print("  %-14s %-16s %3d %9.1f %8d %8.1f %8.1f %8.2f"
+                  % (label, f["name"][:16], f["n_ops"], f["rss_mb"],
+                     f["tier_mb"], f["wall_ms"], f["init_ms"], f["hop_ms"]))
+
+    print("\n" + "=" * 78)
+    print("cost / latency vs monolith baseline")
+    print("=" * 78)
+    print("  %-14s %3s %9s %8s %9s %9s %10s %8s"
+          % ("layout", "fn", "gbs", "u$/req", "dCost", "lat_ms", "dLat",
+             "top1"))
+    for label, r in runs.items():
+        dc = (r["cost_usd"] / base["cost_usd"] - 1.0) * 100.0
+        dl = (r["latency_ms"] / base["latency_ms"] - 1.0) * 100.0
+        print("  %-14s %3d %9.4f %8.4f %8.1f%% %9.1f %9.1f%% %8s"
+              % (label, r["n_functions"], r["gb_seconds"],
+                 r["cost_usd"] * 1e6, dc, r["latency_ms"], dl,
+                 "ok" if r["accuracy"]["ok"] else "MISMATCH"))
+
+    print("\n  cold-start amortisation, u$/req")
+    print("  %-14s %10s %10s %10s %10s %9s"
+          % ("layout", "warm", "reuse=1", "reuse=10", "reuse=100", "cold_ms"))
+    for label, r in runs.items():
+        c = r["cost_usd_reuse"]
+        print("  %-14s %10.4f %10.4f %10.4f %10.4f %9.1f"
+              % (label, r["cost_usd"] * 1e6, c["1"] * 1e6, c["10"] * 1e6,
+                 c["100"] * 1e6, r["latency_cold_ms"]))
+
+    print("\n" + "=" * 78)
+    print("ceiling sweep: fewest functions that fit (Gillis objective)")
+    print("=" * 78)
+    sweep = ceiling_sweep(runs)
+    for c in TIERS:
+        v = sweep[str(c)]
+        print("  %6d MB -> %s" % (c, ("%s (%d fn, max rss %.1f MB)"
+                                      % (v["layout"], v["n_functions"],
+                                         v["max_rss_mb"])) if v
+                                  else "infeasible: no layout fits"))
+
+    print("\n" + "=" * 78)
+    print("Pareto front, warm cost vs warm latency (reference: V1_monolith)")
+    print("=" * 78)
+    front = pareto(runs)
+    for label, c, lat in front:
+        r = runs[label]
+        print("  %-14s %8.4f u$/req  %9.1f ms  %3d fn   "
+              "(-%.1f%% cost, %+.1f%% latency vs baseline)"
+              % (label, c * 1e6, lat, r["n_functions"],
+                 (1 - c / base["cost_usd"]) * 100.0,
+                 (lat / base["latency_ms"] - 1.0) * 100.0))
+
+    out = {
+        "model": pipe_e.MODEL,
+        "batch": pipe_e.BATCH,
+        "n_blocks": pipe_e.N_BLOCKS,
+        "groups": pipe_e.GROUPS,
+        "blocks_per_group": pipe_e.BLOCKS_PER_GROUP,
+        "param_mb_per_group": round(pipe_e.stage_param_mb(1), 2),
+        "activation_mb_per_hop": round(pipe_e.activation_mb(), 4),
+        # Recorded so the file says which configuration produced it: the
+        # loader and the boundary codec both move the tier boundary, and a
+        # result quoted without them is not reproducible.
+        "load_mode": pipe_e.load_mode(),
+        "wire_mode": payload.wire_mode(),
+        # Which start path, and under what parallelism. Both move the cold-start
+        # and the warm numbers, so a result quoted without them is not
+        # reproducible -- and the supervisor is pinned to one thread by design
+        # (see main), which is only legible if it is written down.
+        "spawn": os.environ.get("M2S_SPAWN", "subprocess").strip().lower(),
+        "worker_threads": os.environ.get("OMP_NUM_THREADS", "auto"),
+        "supervisor_threads": 1,
+        "python": sys.version.split()[0],
+        "torch": _torch_version(),
+        "device": os.environ.get("M2S_DEVICE", "auto"),
+        "price_gb_s": PRICE_GB_S,
+        "tiers_mb": TIERS,
+        "reuse_factors": REUSE_FACTORS,
+        "baseline": "V1_monolith",
+        "runs": runs,
+        "ceiling_sweep": sweep,
+        "pareto": [{"layout": l, "cost_usd": c, "latency_ms": t}
+                   for l, c, t in front],
+    }
+    os.makedirs("results", exist_ok=True)
+    path = os.environ.get("M2S_VIT_OUT", "results/vit_split.json")
+    with open(path, "w") as fh:
+        json.dump(out, fh, indent=2, ensure_ascii=False)
+    print("\nsaved %s" % path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

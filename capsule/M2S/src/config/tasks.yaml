@@ -1,0 +1,1871 @@
+tasks:
+  - id: architect_blueprint
+    agent: architect
+    description: |
+      Read storage/analysis_report.json and design a complete serverless architecture blueprint.
+      
+      Your mission: Analyze the storage/analysis_report.json and design a complete serverless
+      architecture in ONE operation that ensures ALL monolith functionality works in AWS.
+      
+      CRITICAL: Use SECTION-BY-SECTION BUILD STRATEGY with WriteFileTool json_key
+      - Read storage/analysis_report.json ONCE
+      - Design complete blueprint IN MEMORY
+      - First, create the empty file:
+          WriteFileTool(path="storage/blueprint.json", content="{}")
+      - Then write each section using json_key (one call per key):
+          WriteFileTool(path="storage/blueprint.json", content=<metadata JSON>,            json_key="metadata")
+          WriteFileTool(path="storage/blueprint.json", content=<first ~8 Lambda defs>,     json_key="lambda_functions")
+          WriteFileTool(path="storage/blueprint.json", content=<next ~8 Lambda defs>,      json_key="lambda_functions")
+             ↑ repeat until all Lambda definitions are added (auto-appends when both are arrays)
+          WriteFileTool(path="storage/blueprint.json", content=<permissions array>,        json_key="lambda_invoke_permissions")
+          WriteFileTool(path="storage/blueprint.json", content=<queues array>,             json_key="sqs_queues")
+          WriteFileTool(path="storage/blueprint.json", content=<rules array>,              json_key="eventbridge_rules")
+          WriteFileTool(path="storage/blueprint.json", content=<tables array>,             json_key="dynamodb_tables")
+          WriteFileTool(path="storage/blueprint.json", content=<buckets array>,            json_key="s3_buckets")
+          WriteFileTool(path="storage/blueprint.json", content=<cognito config>,           json_key="cognito")
+          WriteFileTool(path="storage/blueprint.json", content=<api gateway config>,       json_key="api_gateway")
+          WriteFileTool(path="storage/blueprint.json", content=<dropped list>,             json_key="dropped_functions")
+      - Each json_key call: keep content UNDER 4000 chars to avoid LLM output truncation
+      - json_key auto-appends arrays: if the key already exists and BOTH are arrays, items are concatenated
+      
+      ============================================================
+      CORE PRINCIPLES
+      ============================================================
+      
+      1. Preserve Functionality: Migrate what exists, do not add or remove features
+      2. Basic Architecture: Use API Gateway + Lambda + DynamoDB/S3 + Cognito (if needed)
+      3. Infrastructure Over Code: Authentication is infrastructure, not application code
+      4. Delete, Don't Migrate: Auth endpoints are deleted, not converted to Lambda
+      
+      CRITICAL: "Infrastructure over Code" for Authentication
+      
+      Authentication should be handled by AWS managed services (Cognito), NOT by Lambda code.
+      This means:
+      - Do NOT create Lambda functions for register/login/logout
+      - Do NOT write token validation code in Lambda
+      - Frontend calls Cognito SDK directly (AWS Amplify, Cognito JS SDK)
+      - API Gateway validates tokens automatically (Cognito Authorizer)
+      - Lambda only receives pre-validated user identity via event.requestContext
+      
+      ============================================================
+      ARCHITECTURE DESIGN GUIDELINES
+      ============================================================
+      
+      1. LAMBDA FUNCTIONS DESIGN
+      Map endpoints to Lambda functions.
+      
+      CRITICAL (STRICT RULE FOR THIS CONVERSION):
+      - Define an endpoint as (HTTP method + path), e.g. GET /items/{id}.
+      - You MUST create ONE separate Lambda function for EACH endpoint.
+      - Do NOT group multiple endpoints into one Lambda (no "AppFunction", no internal router/switch).
+      - You MAY organize lambdas by domain for folders/naming, but handlers remain split.
+      
+      Naming / organization guidance (keep LLM autonomy):
+      - Prefer clear, stable names that reflect intent, e.g. {domain}-{action} or {method}-{resource}.
+      - In blueprint.lambda_functions[*].entry_points, each Lambda should list exactly one route path.
+      - If the monolith has both GET /items and POST /items, they become two Lambdas.
+      - Domain inference (NOT rigid):
+        - Derive domain by reasoning from the monolith structure (modules/packages/routes/controllers), not by string-splitting names.
+        - You MAY keep the monolith’s logical grouping (e.g., orders, products, users, admin) if it exists.
+        - If the monolith is flat or ambiguous, choose a reasonable domain grouping (e.g., core, misc) and document it in blueprint metadata/notes.
+      ============================================================
+      LAMBDA COMMUNICATION STRATEGY (Sync + Async)
+      ============================================================
+      
+      Lambda-to-Lambda communication uses one of three mechanisms:
+      
+        A) SYNCHRONOUS — AWS SDK Direct Invoke (RequestResponse)
+           Use when: caller NEEDS callee's return value for its own HTTP response
+           Implementation: boto3 lambda.invoke(InvocationType='RequestResponse')
+           Record in: lambda_invoke_permissions
+        
+        B) ASYNC — SQS Queue (Point-to-Point)
+           Use when: caller does NOT need callee's result; single consumer
+           Implementation: caller sends SQS message; callee becomes SQS-triggered Lambda
+           Record in: sqs_queues + caller's publishes_to + consumer Lambda definition
+        
+        C) ASYNC — EventBridge (Fan-Out / Event Chain)
+           Use when: one action triggers 2+ independent consumers across domains
+           OR: cross-domain workflow chain (A completes → event → B starts)
+           Implementation: caller publishes event; consumers triggered by EventBridge rules
+           Record in: eventbridge_rules + caller's publishes_to + consumer Lambda definitions
+      
+      General rules:
+      - Do NOT use HTTP fetch/requests/axios to call another Lambda via API Gateway URL
+      - Pass target FunctionName / QueueUrl / EventBusName via environment variables
+      - Invoker Lambda MUST have the corresponding SAM policy
+        (LambdaInvokePolicy / SQSSendMessagePolicy / EventBridgePutEventsPolicy)
+      
+      ============================================================
+      STATIC ANALYSIS DATA
+      ============================================================
+      
+      analysis_report.json includes pre-computed fields:
+      
+      1. "call_graph": Raw cross-file function call edges.
+         Each edge: {caller_file, caller_function, caller_line,
+                     callee_module, callee_symbol,
+                     return_value_used, is_awaited}
+         
+         - return_value_used (bool): Whether the caller uses the return value.
+           false = standalone expression statement (fire-and-forget pattern).
+         - is_awaited (bool): Whether the call is preceded by `await`.
+      
+      2. "entry_point_dependencies": Aggregated view per HTTP entry_point.
+         For each entry_point, lists the cross-file functions it DIRECTLY calls,
+         each carrying return_value_used and is_awaited fields.
+      
+      IMPORTANT: entry_point_dependencies only captures LEVEL-1 calls (handler
+      → service). Cross-service calls (service A → service B) appear in
+      call_graph but NOT in entry_point_dependencies. You MUST read source
+      files to discover the full call chain.
+      
+      ============================================================
+      STEP-BY-STEP PROCEDURE (Source-Code-Driven)
+      ============================================================
+      
+      Step 1 — READ SERVICE SOURCE FILES:
+      
+        For each entry_point in entry_point_dependencies, examine its
+        cross_file_calls. For each callee, decide whether to read its
+        source file:
+        
+        SKIP reading (these are NOT cross-Lambda candidates):
+          - STANDARD auth/middleware functions whose names clearly indicate
+            generic authentication (login_required, verify_token,
+            authenticateToken, getUserId, hash_password, jwt_required, etc.)
+          - Pure utility/helper functions (validators, formatters,
+            response helpers, DB connection wrappers)
+          - Database access layer functions (get_table, docClient,
+            storage.get_item, etc.) that are shared infrastructure
+        
+        ⚠️ EXCEPTION — Custom / role-based decorators:
+          If an entry_point uses a decorator or middleware whose name does NOT
+          match common auth patterns above but suggests a ROLE or PERMISSION
+          gate (e.g., @admin_required, @warehouse_required, @delivery_required,
+          @manager_only, @role_required, or any @<role>_required pattern),
+          you MUST read the decorator's source file to determine whether it
+          internally performs authentication (JWT/session/token validation).
+          If it does → treat the endpoint as auth="required" in the blueprint.
+          Do NOT assume these are simple business-logic decorators.
+        
+        DO READ (these MAY contain cross-domain logic):
+          - Business service functions (e.g., order_service.create_order,
+            BookingService.reserve_booking, PaymentService.collect_payment)
+          - Any function whose module name suggests a distinct business domain
+            different from the entry_point's own domain
+        
+        Use ReadFileTool to read each relevant source file. In that file,
+        look for calls to functions from OTHER service/business modules.
+        These cross-service calls (level 2+) may represent cross-Lambda
+        relationships that are invisible in entry_point_dependencies.
+      
+      Step 2 — IDENTIFY cross-Lambda relationships:
+      
+        Based on reading the source code, identify cases where one
+        entry_point's execution chain invokes business logic belonging
+        to a DIFFERENT domain. A cross-Lambda relationship exists when:
+        
+        - The callee function performs stateful operations (DB writes,
+          external API calls, state changes) that are the primary
+          responsibility of another Lambda function
+        - Examples: order creation calling payment processing, delivery
+          completion triggering payment capture, booking calling flight
+          seat reservation, any operation triggering audit/notification
+          in another domain
+        
+        NOT a cross-Lambda relationship:
+        - Calling a shared DB helper or data access wrapper
+        - Calling a pure calculation or validation utility
+        - Calling auth/permission check functions
+        - Read-only queries against another domain's table (can stay local)
+        
+        If an entry_point has NO cross-Lambda relationships (only calls
+        its own domain functions and shared utilities), it is a simple
+        "Worker" Lambda with no cross-Lambda invocations.
+      
+      Step 2b — DECIDE Worker vs Orchestrator (CRITICAL):
+      
+        Classify each endpoint Lambda as one of two patterns:
+        
+        WORKER LAMBDA (most endpoints):
+          The endpoint only operates within a single business domain.
+          → Include the service code LOCALLY in the Lambda's source_files.
+          → Do NOT create a separate "internal" Lambda for the service.
+          → Do NOT invoke another Lambda synchronously.
+          → This is the DEFAULT for simple CRUD / read / single-domain
+            write endpoints.
+        
+        ORCHESTRATOR LAMBDA (few endpoints):
+          The endpoint coordinates operations across MULTIPLE business
+          domains in a single request (e.g., a checkout endpoint that
+          validates inventory, processes payment, and updates analytics).
+          → Include synchronous-path service code LOCALLY to preserve
+            transactional rollback logic within one process.
+          → Only use cross-Lambda communication for ASYNC side-effects
+            (fire-and-forget operations such as analytics updates, audit
+            logs, notifications, counter/ranking refreshes).
+          → Do NOT create "internal service Lambdas" just to invoke them
+            synchronously — this adds latency and distributed transaction
+            complexity for no benefit.
+        
+        RULE: Synchronous Lambda-to-Lambda invoke (mechanism A) should be
+        RARE. It is only justified when the target service has an expensive
+        external dependency that must be independently managed (e.g., a
+        third-party payment gateway with its own retry/timeout policy), or
+        the target service must be independently scalable.
+        In most migration cases, bundling the service code locally in the
+        orchestrator Lambda is simpler and preserves the monolith's
+        transactional guarantees. Prefer local code + async fan-out over
+        synchronous invoke chains.
+      
+      Step 3 — CLASSIFY each cross-Lambda relationship:
+      
+        For each identified relationship, determine the mechanism using
+        these signals (in priority order):
+        
+        (a) SEMANTIC ANALYSIS (primary — from reading source code):
+            - Does the caller need the result to construct its HTTP response?
+              → Synchronous (A)
+            - Is the call a side-effect / fire-and-forget?
+              (audit logs, notifications, counter updates, analytics)
+              → Async (B or C)
+            - Does the function name contain "trigger", "notify", "log",
+              "record", "emit", "publish"?
+              → Likely async
+        
+        (b) STATIC ANALYSIS HINTS (supporting evidence from call_graph):
+            - return_value_used=true → supports Synchronous
+            - return_value_used=false, is_awaited=false → supports Async
+            - return_value_used=false, is_awaited=true → check semantics
+        
+        (c) FAN-OUT CHECK (for async calls):
+            - One action triggers 2+ independent consumers across domains?
+              → EventBridge (C)
+            - Single consumer?
+              → SQS (B)
+        
+        If Synchronous → record in lambda_invoke_permissions
+        If SQS → proceed to Step 4 for queue design
+        If EventBridge → proceed to Step 4 for rule design
+      
+      Step 4 — DESIGN async resources:
+        For SQS candidates:
+          - Create sqs_queues entry (with DLQ, visibility_timeout, max_receive_count)
+          - API Lambda: add publishes_to [{type: "sqs", target: "<QueueName>"}]
+          - Consumer Lambda: set trigger_type="sqs", sqs_source="<QueueName>"
+          - Consumer Lambda source_files = callee module files
+        For EventBridge candidates:
+          - Create eventbridge_rules entry (with source, detail_type, targets list)
+          - API Lambda: add publishes_to [{type: "eventbridge", source, detail_type}]
+          - Consumer Lambdas: set trigger_type="eventbridge", event_pattern={...}
+          - Consumer Lambda source_files = callee module files
+      
+      Step 5 — HANDLE edge cases:
+        - If NO cross-Lambda relationships found across all entry_points
+          → set sqs_queues=[], eventbridge_rules=[], lambda_invoke_permissions=[]
+        - If ALL cross-Lambda calls need synchronous results → no async needed
+          → set sqs_queues=[], eventbridge_rules=[]
+        - Consumer Lambdas (trigger_type="sqs"/"eventbridge") do NOT have entry_points
+          (they are not API-triggered)
+        - Consumer Lambdas still need a handler, runtime, and source_files
+      
+      HOW TO USE ReadFileTool IN THIS TASK:
+      You SHOULD use ReadFileTool to read:
+      - Business service source files identified in Step 1 above
+      - DynamoDB schema files (listed in dynamodb_info.schema_files)
+      You do NOT need to read:
+      - Auth/middleware files (they will be dropped)
+      - Pure utility files (validators, formatters, DB wrappers)
+      - Infrastructure scripts (init_db, setup, migration scripts)
+      
+      HOW TO DERIVE source_files for each Lambda:
+      From entry_point_dependencies, collect the handler file plus all
+      callee_module file paths. If Step 1 revealed deeper cross-service
+      calls (level 2+), include those callee files too. This gives
+      Code Developer the complete file list to read.
+      
+      ============================================================
+      RULE 1: "DELETE, DON'T MIGRATE" - Auth Endpoints
+      ============================================================
+      
+      IF analysis_report.features contains "Auth" tag:
+      
+      Drop These Endpoints (add to dropped_functions):
+      - POST /register, /login, /logout, /refresh-token, /reset-password
+      - GET /me
+      - Reason: "Replaced by Cognito - Frontend calls AWS Amplify directly"
+      
+      Drop These Scripts:
+      - init_dynamodb.py, create_tables.py, setup_db.py
+      - Reason: "Table creation handled by SAM CloudFormation"
+      
+      Preserve Functionality: Only migrate what exists
+      - No auth -> cognito.enabled = false
+      - No database -> dynamodb_tables = []
+      - No file storage -> s3_buckets = []
+      
+      ============================================================
+      RULE 2: "GATEWAY AUTHORIZATION" - Token Validation
+      ============================================================
+      
+      Correct Flow:
+      Request -> API Gateway (Cognito Authorizer validates JWT) -> Lambda (pure business logic)
+      
+      Implementation:
+      - API Gateway Auth.Authorizers.CognitoAuthorizer with UserPoolArn
+      - Lambda accesses: event['requestContext']['authorizer']['claims']['sub']
+      - User ID = Cognito Sub (UUID string)
+      
+      Do NOT Migrate:
+      - verifyToken middleware -> Replaced by API Gateway Authorizer
+      - JWT validation code -> Handled by Cognito Authorizer
+      - Add to dropped_functions
+      
+      2. DATA ARCHITECTURE DESIGN
+      
+      Check analysis_report.dynamodb_info:
+      - IF dynamodb_info.used == false -> Set dynamodb_tables = []
+      - IF dynamodb_info.used == true:
+        CRITICAL: Use ReadFileTool to read the source files listed in
+        analysis_report.dynamodb_info.schema_files. Extract the EXACT table schema:
+        partition key name/type, sort key name/type (if any), and GSIs (if any).
+        Put this structure directly into blueprint.json dynamodb_tables (see OUTPUT section).
+        Then apply the migration strategy below.
+
+      Users Table Decision (three cases):
+      a) Only credentials (password/hash/salt/tokens) → DELETE entire table (Cognito replaces it)
+      b) Also has business profile data (avatar, preferences, address) → split:
+         credentials → Cognito; business fields → DynamoDB UserProfiles table
+      c) Only name/email/phone beyond credentials → use Cognito standard attributes, no UserProfiles
+      - Do NOT migrate any user credential fields (email as login, password, tokens) to DynamoDB
+      - Business tables that previously referenced integer user_id -> use Cognito Sub (UUID string) as foreign key
+
+      Business Tables (Orders, Products, etc.):
+      - Migrate all to DynamoDB
+      - Foreign Key Type Change:
+        * Old: user_id -> INTEGER or String(username)
+        * New: userId -> String (Cognito Sub UUID)
+        * Lambda source: event['requestContext']['authorizer']['claims']['sub']
+      - Add GSI with userId if queries by user needed
+
+      CRITICAL: For each table, use ReadFileTool to read the schema source files and extract
+      the EXACT schema - write it directly into dynamodb_tables in blueprint.json.
+      - partition_key: name and type (S/N/B)
+      - sort_key: name and type (optional, omit if none)
+      - gsi: list of GSIs with index_name and partition_key (optional, [] if none)
+      
+      File Storage:
+      IF analysis_report.features contains "FileUpload" or "FileStorage":
+      - Add S3 bucket to s3_buckets list
+      - ELSE: Set s3_buckets = []
+      
+      3. AUTHENTICATION ARCHITECTURE DESIGN
+      
+      Check analysis_report.features:
+      - IF "Auth" tag is NOT present -> Set cognito = {enabled: false}
+      - IF "Auth" tag is present:
+        * enabled: true
+        * user_pool_attributes: ["email", "name"] (extract from user model)
+        * password_policy: Define requirements (min_length, symbols, numbers, etc.)
+        * Do NOT create post_confirmation triggers or any Cognito-triggered Lambda functions
+      
+      4. API GATEWAY CONFIGURATION
+      
+      API Gateway Configuration:
+      - type: "REST" (use REST API for standard HTTP endpoints)
+      - cors: {allow_origins: ["*"], allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}
+      
+      Authorizer Configuration (CRITICAL for Gateway Authorization):
+      - IF cognito.enabled == true:
+        * authorizer: "Cognito"
+        * authorizer_type: "COGNITO_USER_POOLS"
+        * user_pool_arn: Reference to Cognito User Pool
+        * token_validation: "Automatic at API Gateway layer"
+        * identity_source: "Authorization header (Bearer token)"
+      - ELSE:
+        * authorizer: "None"
+      
+      Security Flow:
+      1. Client includes JWT in Authorization header: "Bearer eyJhbGc..."
+      2. API Gateway validates JWT signature using Cognito public keys
+      3. If valid -> API Gateway passes user claims to Lambda via event.requestContext
+      4. If invalid -> API Gateway returns 401 Unauthorized (Lambda never invoked)
+      5. Lambda receives pre-validated user_id via event['requestContext']['authorizer']['claims']['sub']
+      
+      Result: Zero authentication code in Lambda functions
+      
+      ============================================================
+      OUTPUT BLUEPRINT STRUCTURE (Build section-by-section with json_key → storage/blueprint.json)
+      ============================================================
+      
+      Generate complete blueprint.json with these sections:
+      
+      1. metadata:
+         - application_name: Extract from analysis_report
+         - architecture_pattern: "Basic Serverless Architecture" or "Event-Driven Serverless Architecture"
+           (use Event-Driven if sqs_queues or eventbridge_rules are non-empty)
+         - has_authentication: true/false (based on features)
+         - has_database: true/false (based on dynamodb_info.used)
+         - has_file_storage: true/false (based on features)
+         - has_async_flows: true/false (true if sqs_queues or eventbridge_rules are non-empty)
+      
+      2. lambda_functions: Array of Lambda definitions
+         Note (STRICT): ONE API endpoint (method+path) = ONE Lambda.
+               - Do NOT group multiple endpoints into one Lambda (no internal routing).
+               - You MAY organize folders/names by domain (inferred from monolith structure), but handlers stay split.
+         CRITICAL: Derive source_files for each Lambda:
+               - Start with the entry_point's handler file
+               - Add files corresponding to callee_modules in its cross_file_calls
+               - If you discovered deeper cross-service calls (level 2+) during
+                 Step 1 of communication design, include those callee files too
+               - This ensures Code Developer gets the complete, precise file list
+         
+         trigger_type values: "api" | "internal" | "sqs" | "eventbridge"
+           - "api": HTTP endpoint, triggered by API Gateway (has entry_points)
+           - "internal": Called by other Lambdas via SDK invoke
+           - "sqs": Triggered by SQS queue (has sqs_source, NO entry_points)
+           - "eventbridge": Triggered by EventBridge rule (has event_pattern, NO entry_points)
+         
+         Runtime: Use current runtimes based on the monolith's source language:
+         - Python projects (.py) → "python3.12"
+         - Node.js projects (.js) → "nodejs22.x"
+         Do NOT use deprecated runtimes (nodejs18.x, nodejs20.x).
+         
+         CRITICAL — Per-Endpoint Auth Classification:
+         Every API Lambda MUST include an "auth" field:
+           - "auth": "required" — endpoint needs authenticated user (Cognito Authorizer)
+           - "auth": "none"     — endpoint is public (no auth required)
+         
+         How to determine auth for each endpoint (check in order):
+         
+         RULE A — Standard auth middleware:
+         - If the endpoint uses a well-known auth decorator/middleware
+           (login_required, jwt_required, verifyToken, authenticateToken,
+           @auth_required, isAuthenticated, protect, etc.) → "auth": "required"
+         
+         RULE B — Custom role / permission decorators (CRITICAL):
+         - If the endpoint uses ANY decorator or middleware whose name suggests
+           a role or permission gate — such as @admin_required,
+           @warehouse_required, @delivery_required, @manager_only,
+           @role_required(role), @requires_role(...), or any @<role>_required
+           pattern — these are NOT public endpoints.
+         - Role-based decorators typically perform BOTH authentication (JWT/
+           session validation) AND authorization (role checking) internally.
+           The decorated handler may never explicitly read req.user or
+           session.userId, but the endpoint still requires a logged-in user.
+         - Any endpoint guarded by a role/permission decorator → "auth": "required"
+         
+         RULE C — No middleware, public resource:
+         - If the endpoint has NO auth decorator/middleware of any kind and serves
+           publicly accessible data (product catalog, search, public listings)
+           → "auth": "none"
+         
+         RULE D — Fallback:
+         - When in doubt, check if the handler or its decorators read user
+           identity (req.user, session.userId, current_user, g.user, request.user).
+           If it does → "required". If it doesn't → "none".
+         
+         API Lambda example (Python):
+         [
+           {
+             "name": "items-get-item",
+             "trigger_type": "api",
+             "runtime": "python3.12",
+             "handler": "handler.lambda_handler",
+             "auth": "none",
+             "source_files": ["app/routes/items.py", "app/services/item_service.py"],
+             "entry_points": ["GET /items/{id}"],
+             "environment_variables": {
+               "ITEMS_TABLE": "${ItemsTable}"
+             }
+           }
+         ]
+         
+         API Lambda example (Node.js):
+         [
+           {
+             "name": "items-get-item",
+             "trigger_type": "api",
+             "runtime": "nodejs22.x",
+             "handler": "handler.handler",
+             "auth": "none",
+             "source_files": ["routes/items.js", "services/item_service.js"],
+             "entry_points": ["GET /items/{id}"],
+             "environment_variables": {
+               "ITEMS_TABLE": "${ItemsTable}"
+             }
+           }
+         ]
+         
+         API Lambda with async publishing:
+           {
+             "name": "order-checkout",
+             "trigger_type": "api",
+             "auth": "required",
+             "entry_points": ["POST /orders/checkout"],
+             "publishes_to": [
+               {"type": "sqs", "target": "BestsellerUpdateQueue"},
+               {"type": "eventbridge", "source": "app.orders", "detail_type": "OrderCompleted"}
+             ],
+             "environment_variables": {
+               "ORDERS_TABLE": "${OrdersTable}",
+               "BESTSELLER_QUEUE_URL": "${BestsellerUpdateQueue}"
+             }
+           }
+         
+         SQS consumer Lambda:
+           {
+             "name": "update-bestsellers",
+             "trigger_type": "sqs",
+             "sqs_source": "BestsellerUpdateQueue",
+             "source_files": ["utils/bestsellers.js"]
+           }
+         
+         EventBridge consumer Lambda:
+           {
+             "name": "process-loyalty",
+             "trigger_type": "eventbridge",
+             "event_pattern": {"source": ["app.orders"], "detail-type": ["OrderCompleted"]},
+             "source_files": ["services/loyalty.py"]
+           }
+      
+      3. dynamodb_tables: Array of table definitions (empty if no database)
+         CRITICAL: Include EXACT schema extracted from source files - no schema_source_files field.
+         Attribute types: "S" (String), "N" (Number), "B" (Binary).
+         sort_key and gsi are optional; omit if not present in the monolith.
+         [
+           {
+             "logical_name": "Items",
+             "purpose": "Store application items/resources",
+             "partition_key": {"name": "id", "type": "S"},
+             "sort_key": {"name": "createdAt", "type": "S"},
+             "gsi": [
+               {
+                 "index_name": "userId-index",
+                 "partition_key": {"name": "userId", "type": "S"}
+               }
+             ]
+           }
+         ]
+      
+      4. s3_buckets: Array of S3 bucket definitions (empty if no file storage)
+         [
+           {
+             "logical_name": "FileStorageBucket",
+             "purpose": "Store user-uploaded files and generated documents"
+           }
+         ]
+      
+      5. cognito: Cognito configuration (empty if no auth)
+         {
+           "enabled": true/false,
+           "user_pool_attributes": ["email", "name"],
+           "password_policy": {...}
+         }
+       
+      
+      6. api_gateway: API Gateway configuration
+         {
+           "type": "REST",
+           "cors": {...},
+           "authorizer": "Cognito" or "None"
+         }
+      
+      7. lambda_invoke_permissions: Cross-Lambda SYNCHRONOUS invocation map
+         Only for mechanism A (synchronous invoke where caller needs return value).
+         [
+           {"invoker": "booking-create", "target": "payments-charge"}
+         ]
+         Set to [] if no synchronous Lambda-to-Lambda calls exist.
+      
+      8. sqs_queues: Array of SQS queue definitions (empty if no async point-to-point patterns)
+         [
+           {
+             "logical_name": "BestsellerUpdateQueue",
+             "purpose": "Async bestseller counter updates after checkout",
+             "dlq": true,
+             "visibility_timeout": 60,
+             "max_receive_count": 3
+           }
+         ]
+         Set to [] if no SQS patterns identified.
+      
+      9. eventbridge_rules: Array of EventBridge rule definitions (empty if no fan-out patterns)
+         [
+           {
+             "name": "OrderCompletedRule",
+             "source": "app.orders",
+             "detail_type": "OrderCompleted",
+             "targets": ["process-loyalty", "send-notification"],
+             "description": "Fan-out: order completion triggers loyalty and notification"
+           }
+         ]
+         Set to [] if no EventBridge patterns identified.
+      
+      10. dropped_functions: List of dropped items
+         [
+           {
+             "item": "POST /register",
+             "type": "endpoint",
+             "reason": "Replaced by Cognito User Pool registration"
+           },
+           {
+             "item": "POST /login",
+             "type": "endpoint",
+             "reason": "Replaced by Cognito User Pool authentication"
+           },
+           {
+             "item": "POST /logout",
+             "type": "endpoint",
+             "reason": "Replaced by Cognito User Pool sign-out"
+           },
+           {
+             "item": "GET /me",
+             "type": "endpoint",
+             "reason": "Replaced by Cognito - client reads user info directly from token"
+           },
+           {
+             "item": "verifyToken middleware / auth decorators",
+             "type": "code",
+             "reason": "Replaced by API Gateway Cognito Authorizer - token validation at gateway layer"
+           },
+           {
+             "item": "init_dynamodb.py",
+             "type": "script",
+             "reason": "Infrastructure script - table creation handled by SAM template CloudFormation resources"
+           },
+           {
+             "item": "Users table",
+             "type": "table",
+             "reason": "User authentication moved to Cognito User Pool - entire users table deleted"
+           }
+         ]
+      
+      ============================================================
+      CRITICAL VALIDATION CHECKLIST
+      ============================================================
+      
+      Before finalizing blueprint, verify "Infrastructure over Code" principles:
+      
+      - lambda_invoke_permissions is present: every synchronous invoker->target pair is listed; set [] if none
+      - sqs_queues is present: set [] if no async point-to-point patterns
+      - eventbridge_rules is present: set [] if no fan-out patterns
+      - Every invoker Lambda has the target FunctionName / QueueUrl / EventBusName in its environment_variables
+      - Every SQS consumer Lambda has trigger_type="sqs" and sqs_source
+      - Every EventBridge consumer Lambda has trigger_type="eventbridge" and event_pattern
+      - Every API Lambda has an "auth" field set to "required" or "none"
+      - Public endpoints (catalog listings, search, public data) have "auth": "none"
+      - User-specific endpoints (cart, orders, profile) have "auth": "required"
+      - Endpoints guarded by custom role/permission decorators (@warehouse_required,
+        @delivery_required, @admin_required, @<role>_required, etc.) have "auth": "required"
+        — these decorators perform authentication internally even though their names
+        suggest authorization; they must NOT be classified as public endpoints
+      - All entry_points are accounted for (either in Lambda or dropped_functions)
+      - Auth endpoints (/register, /login, /logout, /refresh-token, /reset-password, /me) are DROPPED (not migrated to Lambda)
+      - Users table is handled per decision rule (delete if only credentials; split if has business profile data)
+      - No post_confirmation trigger or Cognito-triggered Lambda in blueprint
+      - Auth middleware/decorators are DROPPED (token validation at API Gateway, not Lambda)
+      - Infrastructure scripts are dropped with proper reason
+      - API Gateway authorizer is "Cognito" (if auth exists), not "None"
+      - Business tables foreign keys reference Cognito Sub (String UUID), not integer user_id
+      - If monolith has no auth -> cognito.enabled = false
+      - If monolith has no database -> dynamodb_tables = []
+      - If monolith has no file storage -> s3_buckets = []
+      - Each dynamodb_tables entry contains partition_key (plus sort_key/gsi if applicable) extracted from source files
+      
+      Three-Layer Check:
+      1. Infrastructure Layer: Cognito User Pool replaces Users table (credentials)
+      2. Code Layer: Auth endpoints deleted, frontend calls Cognito SDK directly
+      3. Data Association Layer: Business data uses Cognito Sub, not integer user_id
+      
+      Focus on correctness and completeness. The blueprint must enable SAM Engineer
+      to generate working infrastructure.
+      
+      ============================================================
+      POST-WRITE VERIFICATION (MANDATORY)
+      ============================================================
+      
+      After WriteFileTool reports success for storage/blueprint.json,
+      you MUST perform a read-back verification:
+      
+      1. Use ReadFileTool to read storage/blueprint.json
+      2. Check that the file contains ALL sections: metadata, lambda_functions,
+         dynamodb_tables, s3_buckets, cognito, api_gateway,
+         lambda_invoke_permissions, sqs_queues, eventbridge_rules, dropped_functions
+      3. Check that dropped_functions array has the correct number of items
+      4. Check that the JSON ends with a proper closing brace "}"
+      5. If the file is truncated or incomplete, re-write the COMPLETE JSON
+         using WriteFileTool and verify again
+      
+      WARNING: The framework may silently truncate long tool arguments.
+      The read-back step catches this. Do NOT skip it.
+      
+    expected_output: |
+      A complete blueprint.json at storage/blueprint.json with all sections populated:
+      metadata, lambda_functions, lambda_invoke_permissions, sqs_queues,
+      eventbridge_rules, dynamodb_tables, s3_buckets, cognito, api_gateway,
+      dropped_functions.
+      
+      Must preserve all monolith functionality and follow architecture principles.
+      The file MUST be verified via read-back after writing.
+
+  - id: generate_complete_application
+    agent: code_developer
+    description: |
+      Based on storage/blueprint.json, generate a COMPLETE serverless application.
+
+      Your mission: Generate a COMPLETE serverless application ready for deployment.
+      
+      ============================================================
+      PHASE 1: LAMBDA FUNCTIONS
+      ============================================================
+      For EACH Lambda in blueprint.lambda_functions:
+      
+      Step 1.1: Source Code Collection
+      Primary path: the Blueprint lists source_files for each Lambda — these are the
+      files identified by static analysis as directly relevant.
+      1. Always start by using ReadFileTool to read the raw content of every file in
+         source_files. This is your primary and most reliable source of truth.
+      2. You MAY autonomously invoke CodeRAGTool at any point during code transformation
+         when you need additional context that ReadFileTool alone cannot provide, such as:
+         - A helper function or utility called by the source files whose definition is not
+           in source_files (e.g., "find the definition of validate_booking_date").
+         - A dependency whose implementation lives in a file not listed in source_files.
+         - Understanding how a pattern is used elsewhere in the codebase to clarify intent
+           (e.g., "how is the payment module called in other route handlers").
+         When CodeRAGTool returns promising results, use ReadFileTool to read the full
+         file for complete context — do not rely on the RAG snippet alone.
+      3. If after reading source_files and querying CodeRAGTool you still lack context,
+         use ReadFileTool to read additional files directly (e.g., files referenced
+         in imports or called by the source code).
+      
+      Step 1.2: Transform to Lambda Handler
+      Create: output/lambdas/{domain}/{lambda_name}/handler.py (or .js)
+      - {domain} is chosen by reasoning from the monolith’s code structure and route organization (do not use a rigid parsing rule).
+      - You MAY use output/lambdas/{lambda_name}/handler.py if the monolith has no clear domains, but prefer domain folders when sensible.
+      - Example (domainful): output/lambdas/orders/orders-get-order/handler.py
+      - Example (flat): output/lambdas/get-item/handler.py
+      - WriteFileTool accepts EXACTLY ONE file per call. Its Action Input MUST be one dictionary with keys such as path/content/append/json_key.
+      - NEVER pass a list/array of files to WriteFileTool. NEVER batch multiple handlers, dependency files, or README sections into one WriteFileTool call.
+      - For every generated file, call WriteFileTool separately:
+        one call for one handler, one call for one requirements.txt, one call for one package.json, one call for README.md.
+      - If a WriteFileTool call fails, stop and fix that SAME file first. Do NOT claim the Lambda was generated and do NOT move on to the next file until the current write succeeds.
+      
+      CRITICAL: REFACTOR MINDSET
+      Before writing the handler, analyze the responsibility:
+      - Is this a "Worker" (does DB operations directly)? -> Implement business logic locally.
+      - Is this an "Orchestrator" (coordinates other steps)? -> Use the Orchestration Rules below.
+      
+      Key transformations:
+      - Flask/Express routes -> lambda_handler(event, context)
+      - STRICT: Each Lambda implements ONLY ONE endpoint (method+path) from entry_points
+      - Do NOT implement multiple routes inside one handler (no if/else routing)
+      - Extract parameters from event['pathParameters'] / event['queryStringParameters']
+      - Extract body from json.loads(event['body'])
+      - Replace database calls: SQLite/MySQL -> boto3 DynamoDB client
+      - Remove global state (use environment variables)
+      
+      CRITICAL: ORCHESTRATION LOGIC RULES
+      If a Lambda function's primary role is to coordinate a workflow (e.g., create_booking calling flight/payment services):
+      
+      1. PURE ORCHESTRATION: 
+         - It must ONLY invoke other Lambdas via SDK invoke, SQS send_message, or EventBridge put_events.
+         - It must NOT contain local business logic implementation (e.g., do not write reserve_flight() locally).
+         - It must NOT access the database directly for steps handled by other Lambdas.
+         
+      2. NO ZOMBIE CODE:
+         - Do NOT copy helper functions from the monolith if they are replaced by external Lambda calls.
+         - If you invoke `invoke_lambda(..., 'reserve_flight')`, DELETE the local `reserve_flight` function definition.
+      
+      3. ERROR HANDLING:
+         - Handle errors from the invoked Lambda payload, not local try/except on DB logic.
+
+      User Identity Standard Pattern:
+      ```python
+      def lambda_handler(event, context):
+          # Get user_id from pre-validated Cognito claims
+          user_id = event['requestContext']['authorizer']['claims']['sub']  # UUID
+          
+          # If user profile needed, query UserProfiles
+          if need_profile:
+              profile = profiles_table.get_item(Key={'userId': user_id})
+          
+          # Business logic with UUID user_id
+          return process_logic(user_id, event['body'])
+      ```
+      
+      - All userId fields: String type (Cognito Sub UUID)
+      - Add proper error handling and logging
+      
+      Step 1.3: Shared Layer (decide ONCE before writing any handler)
+      
+      Before writing any handler, scan ALL lambda source_files for repeated code.
+      
+      Create output/layers/shared/ IF:
+      - The same utility function is used by 3+ Lambda handlers, OR
+      - A heavy 3rd-party dependency is shared by multiple Lambdas.
+      
+      Layer structure:
+      - Python: output/layers/shared/python/shared_utils.py
+                 output/layers/shared/requirements.txt  (OPTIONAL — see rules below)
+      - Node.js: output/layers/shared/nodejs/shared.js
+                 output/layers/shared/nodejs/package.json  (OPTIONAL — see rules below)
+      
+      ⚠️ SAM BUILD BEHAVIOR FOR LAYERS (differs from Lambda functions):
+      SAM build treats functions and layers differently:
+      - Lambda functions: SAM auto-detects requirements.txt/package.json in CodeUri
+        and runs pip/npm install automatically. No extra config needed.
+      - Layers: SAM does NOT auto-install dependencies. Without Metadata: BuildMethod,
+        SAM just copies ContentUri as-is. The SAM engineer task adds BuildMethod to the
+        template when a layer exists, which triggers pip/npm install during sam build.
+      
+      Your responsibility as Code Developer:
+      - Put custom .py source code in output/layers/shared/python/ (NOT the root)
+      - Put requirements.txt (if needed) at output/layers/shared/ (the root)
+      - The SAM engineer will configure Metadata: BuildMethod in template.yaml,
+        which makes SAM install deps into python/ alongside your source code.
+      
+      What to include in layer CODE:
+      - Shared helper functions (response formatters, validators, DynamoDB helpers)
+      - Heavy 3rd-party deps shared by 3+ Lambdas
+      
+      What NOT to include in layer:
+      - Business logic specific to one endpoint (keep in that Lambda's handler)
+      - boto3 / AWS SDK (already pre-installed in Lambda runtime — do NOT add to
+        requirements.txt or package.json, neither for the layer nor for individual Lambdas)
+      
+      LAMBDA RUNTIME BUILT-IN LIBRARIES — NEVER add these to ANY dependency file:
+      - Python: boto3, botocore, s3transfer, jmespath, urllib3 (all pre-installed)
+      - Node.js: Do NOT assume all `@aws-sdk/*` packages are built into nodejs22.x.
+        CRITICAL exception: `@aws-sdk/lib-dynamodb` is NOT runtime built-in and MUST be
+        packaged whenever used (handler code or shared layer). You MAY rely on bundled
+        service client packages such as `@aws-sdk/client-sqs` and `@aws-sdk/client-dynamodb`,
+        but helper libraries like `lib-dynamodb` must be explicit dependencies.
+      After collecting dependencies from imports, REMOVE all built-in libraries above.
+      If the remaining dependency set is EMPTY, DO NOT create requirements.txt / package.json
+      for the layer. An absent dependency file is correct — SAM will skip pip/npm install.
+      
+      In each Lambda handler that uses the layer:
+      - Python:  from shared_utils import format_response
+      - Node.js: const { formatResponse } = require('/opt/nodejs/shared');
+      
+      ⚠️ CRITICAL: Node.js layer import compatibility
+      Lambda layers are mounted at /opt/. ESM (import) has strict module resolution
+      that does NOT search /opt/ or the Lambda runtime's built-in @aws-sdk/* path.
+      CJS (require) uses NODE_PATH which includes /opt/nodejs/ and the runtime's
+      built-in modules. Therefore, Node.js Lambda handlers that use shared layers
+      MUST use CommonJS require() syntax, NOT ESM import syntax.
+      
+      If no shared code is needed, skip this step entirely (do NOT create empty layer dirs).
+      
+      Step 1.4: Cross-Lambda Communication Code
+      
+      There are THREE communication mechanisms. Use the one matching the blueprint:
+      
+        A) SYNCHRONOUS INVOKE (for entries in blueprint.lambda_invoke_permissions):
+        Caller NEEDS the callee's return value for its own HTTP response.
+        ```python
+        import boto3, json, os
+        lambda_client = boto3.client('lambda')
+        response = lambda_client.invoke(
+            FunctionName=os.environ['PROCESS_PAYMENT_FUNCTION_NAME'],
+            InvocationType='RequestResponse',
+            Payload=json.dumps({'chargeId': charge_id})
+        )
+        result = json.loads(response['Payload'].read())
+        ```
+      
+        B) SQS PUBLISH (for API Lambdas with publishes_to type="sqs"):
+        Fire-and-forget: caller does NOT need result. Queue URL from env var.
+        ```python
+        import boto3, json, os
+        sqs = boto3.client('sqs')
+        sqs.send_message(
+            QueueUrl=os.environ['BESTSELLER_QUEUE_URL'],
+            MessageBody=json.dumps({'orderId': order_id, 'books': purchased_books})
+        )
+        ```
+      
+        C) EVENTBRIDGE PUBLISH (for API Lambdas with publishes_to type="eventbridge"):
+        Event notification: one or more consumers react independently.
+        ```python
+        import boto3, json
+        events = boto3.client('events')
+        events.put_events(Entries=[{
+            'Source': 'app.orders',
+            'DetailType': 'OrderCompleted',
+            'Detail': json.dumps({'orderId': order_id, 'userId': user_id})
+        }])
+        ```
+      
+      - Do NOT use HTTP fetch/axios/requests to call another Lambda via API Gateway URL.
+      - Do NOT use lambda.invoke(InvocationType='Event') — use SQS or EventBridge for async.
+      - The SAM engineer will add the required IAM policies based on the blueprint.
+      
+      Step 1.5: Dependencies & Configuration
+      - REFERENCE analysis_report.json (specifically dependency_graph) and scan source code import/require statements to determine dependencies.
+      - Do NOT include dependencies already provided by the shared layer (if created).
+      - DEPENDENCY FILTERING (apply to EVERY dependency file — layer AND individual Lambdas):
+        1. Collect raw imports from source code.
+        2. Remove Python stdlib modules (json, os, decimal, uuid, hashlib, etc.).
+        3. Remove Lambda runtime built-ins: boto3, botocore, s3transfer, jmespath, urllib3.
+           For Node.js, do NOT blanket-remove `@aws-sdk/*`. Keep any SDK package that is
+           not guaranteed runtime-bundled. `@aws-sdk/lib-dynamodb` must stay as a dependency.
+        4. Remove packages already provided by the shared layer.
+        5. If the remaining set is EMPTY → DO NOT create a dependency file for this Lambda.
+           An absent requirements.txt / package.json is correct; SAM will simply package
+           the handler code as-is, and dependencies come from the runtime + shared layer.
+      - For Python Lambdas:
+        - ONLY create output/lambdas/{lambda_name}/requirements.txt when there are
+          non-runtime, non-layer third-party dependencies after filtering.
+        - NEVER include boto3, botocore, s3transfer, jmespath — they are pre-installed.
+      - For Node.js Lambdas:
+        - ONLY create output/lambdas/{lambda_name}/package.json when there are
+          non-runtime, non-layer third-party dependencies after filtering.
+        - DO NOT create requirements.txt for Node.js Lambdas.
+        - AWS SDK Rule: Do NOT assume all `@aws-sdk/*` v3 packages are runtime-bundled.
+          `@aws-sdk/lib-dynamodb` is NOT built into nodejs22.x and MUST be added to
+          package.json or a shared layer package.json when used.
+          Service client packages like `@aws-sdk/client-sqs` and
+          `@aws-sdk/client-dynamodb` may come from the runtime, but it is still acceptable
+          to package them if your layer/function directly depends on them.
+        - ⚠️ MUST use CommonJS syntax (require/exports) in handler.js — NOT ESM (import/export).
+          Reason: Lambda layers are mounted at /opt/nodejs/. ESM module resolution does NOT
+          search NODE_PATH, so `import ... from '/opt/nodejs/shared.js'` fails to resolve
+          SDK packages from within layer code. CJS `require()`
+          uses NODE_PATH which correctly includes /opt/nodejs/ and the runtime's SDK path.
+        - Do NOT add "type": "module" to any package.json. All .js files must be treated
+          as CommonJS by the Node.js runtime.
+        - If package.json is needed (for non-runtime third-party deps), ensure it does NOT
+          contain "type": "module". Include engines field matching the target Node.js runtime.
+      
+      
+
+      ============================================================
+      ITERATION BUDGET — DO NOT SELF-LIMIT
+      ============================================================
+      You have 300 tool-call iterations available. That is MORE than enough to
+      generate every single Lambda handler. Do NOT worry about "time constraints"
+      or "running out of iterations". Do NOT create placeholders, stubs, or
+      shortcuts. You MUST generate EVERY Lambda handler listed in the blueprint
+      with COMPLETE, production-ready business logic. Generate them one by one,
+      domain by domain, until ALL are done. There is no time pressure.
+
+      ============================================================
+      CRITICAL RULES
+      ============================================================
+      1. PRESERVE ALL BUSINESS LOGIC - do not simplify or skip
+      2. GENERATE COMPLETE FILES - not snippets
+      3. MAINTAIN DIRECTORY STRUCTURE as shown above
+      4. ENSURE CONSISTENCY - all references between files must work
+      5. USE ENVIRONMENT VARIABLES - no hardcoded values
+      5a. WriteFileTool is SINGLE-FILE ONLY:
+          valid input example -> {"path": "output/lambdas/orders/orders-create/handler.py", "content": "..."}
+          invalid input example -> [{"path": "file1", "content": "..."}, {"path": "file2", "content": "..."}]
+          invalid input example -> {"files": [{"path": "file1", "content": "..."}]}
+          You MUST write files one at a time.
+      5b. Before your final answer, ensure every Lambda in blueprint.lambda_functions has a corresponding on-disk handler file under output/lambdas/.
+          If any handler was not written successfully, continue writing missing files instead of reporting success.
+      6. For SQS-triggered Lambdas (trigger_type="sqs" in blueprint):
+         - Handler receives event['Records'], iterate and parse record['body']
+         - No API Gateway response format needed (no statusCode/headers/body wrapper)
+         - Use batch item failure reporting for partial failures
+      7. For EventBridge-triggered Lambdas (trigger_type="eventbridge" in blueprint):
+         - Handler receives event['detail'] directly
+         - No API Gateway response format needed
+      8. For API Lambdas with publishes_to in blueprint:
+         - Replace direct function calls with SQS send_message or EventBridge put_events
+         - ⚠️ MUST await the SQS/EventBridge send call BEFORE returning the HTTP response.
+           Lambda may freeze the execution environment immediately after the handler returns.
+           Any non-awaited async operations (e.g., `.then().catch()` without await, or
+           fire-and-forget promises) may be silently dropped, causing message loss.
+           Correct pattern:
+             await sqs.send_message(...)   # Python
+             await sqsClient.send(...)     # Node.js
+           Then return the HTTP response after the message is confirmed sent.
+         - Queue URL / Event Bus name from environment variables (os.environ[...])
+      9. DO NOT generate Step Functions, SNS handlers, or any services not in the blueprint
+      
+      CRITICAL: YOU ARE A CODE DEVELOPER, NOT AN INFRASTRUCTURE ENGINEER!
+      
+      YOUR RESPONSIBILITY:
+      Generate Lambda function code (handler.py, handler.js)
+      Generate dependency files (requirements.txt, package.json) ONLY when needed
+      (skip if the Lambda has no dependencies beyond runtime built-ins + shared layer)
+      
+      NOT YOUR RESPONSIBILITY (DO NOT GENERATE):
+      template.yaml (SAM template) - This is sam_engineer's job!
+      template.yml
+      serverless.yml
+      cloudformation.yaml
+      samconfig.toml
+      Any AWS CloudFormation or SAM infrastructure-as-code files
+      
+      The next agent (sam_engineer) will analyze your generated code and create all infrastructure files.
+      Focus ONLY on application code, NOT infrastructure definitions!
+    expected_output: |
+      Complete application code in output/ directory:
+      - Lambda handlers and dependencies
+      
+      NO infrastructure files (template.yaml) - sam_engineer creates those!
+
+  # ============================================================
+  # SAM Template Generation - Split into 3 micro-tasks to avoid
+  # context window overflow. Each task reads only what it needs
+  # and appends to the same output/template.yaml incrementally.
+  # context=[] is enforced in main.py for all three task IDs.
+  # ============================================================
+
+  - id: generate_shared_resources_template
+    agent: sam_engineer
+    description: |
+      MISSION: Read storage/blueprint.json ONLY and generate the shared infrastructure
+      resources (DynamoDB tables, Cognito, S3, API Gateway header, SharedUtilsLayer
+      declaration). Write results to output/template.yaml.
+
+      This task does NOT touch output/lambdas/ at all. Lambda functions are handled
+      in the next task. Your only input is blueprint.json.
+
+      ============================================================
+      STEP 1: READ BLUEPRINT
+      ============================================================
+
+      Read storage/blueprint.json and extract:
+        * metadata.runtime             (e.g. python3.12)
+        * metadata.has_authentication  (bool)
+        * metadata.has_database        (bool)
+        * metadata.has_file_storage    (bool)
+        * metadata.has_async_flows     (bool)
+        * dynamodb_tables[]            (partition_key, sort_key, gsi)
+        * sqs_queues[]                 (logical_name, dlq, visibility_timeout, max_receive_count)
+        * eventbridge_rules[]          (name, source, detail_type, targets)
+        * s3_buckets[]
+        * cognito                      (enabled, userPoolName, etc.)
+        * api_gateway                  (cors, authorizer)
+        * lambda_invoke_permissions[]  (save this list for the next task)
+
+      Also check if output/layers/shared/ exists on disk using FileListTool.
+      If it exists, record the runtime from output/layers/shared/python/ or
+      output/layers/shared/nodejs/.
+
+      ============================================================
+      STEP 2: WRITE output/template.yaml
+      ============================================================
+
+      Write a YAML file with the following sections IN ORDER. This is the
+      beginning of the final SAM template — the next task will append Lambda
+      function definitions to this same file.
+
+      Section A — Template header and Globals:
+        ```yaml
+        AWSTemplateFormatVersion: '2010-09-09'
+        Transform: AWS::Serverless-2016-10-31
+        Description: Serverless application (auto-generated)
+
+        Globals:
+          Function:
+            Runtime: <runtime from blueprint>
+            Timeout: 30
+            MemorySize: 512
+            Tracing: Active
+            Environment:
+              Variables:
+                ENVIRONMENT: !Ref Environment
+
+        Parameters:
+          Environment:
+            Type: String
+            Default: dev
+            AllowedValues: [dev, staging, prod]
+        ```
+
+      Section B — API Gateway (always include):
+        - If cognito.enabled == true: configure DefaultAuthorizer + CognitoAuthorizer
+          on the API resource itself. This automatically protects ALL attached Lambda
+          Api events — do NOT add per-event Auth in the functions template.
+          ```yaml
+          MyApi:
+            Type: AWS::Serverless::Api
+            Properties:
+              StageName: !Ref Environment
+              Cors: ...
+              Auth:
+                DefaultAuthorizer: CognitoAuthorizer
+                Authorizers:
+                  CognitoAuthorizer:
+                    UserPoolArn: !GetAtt UserPool.Arn
+          ```
+        - If cognito.enabled == false: no Auth block on API
+
+      Section C — Cognito (only if cognito.enabled == true):
+        - AWS::Cognito::UserPool
+        - AWS::Cognito::UserPoolClient
+        - If protected routes depend on a Cognito custom role attribute, declare that
+          attribute in UserPool.Schema using the bare schema name only
+          (e.g. Name: role, NOT Name: custom:role).
+        - If handler code, API authorization logic, or test/bootstrap setup reads or
+          sets custom:role, the UserPool schema MUST declare Name: role so the
+          deployed Cognito attribute/claim name is custom:role and remains
+          consistent with the code.
+        - Do NOT set LambdaConfig on UserPool (circular dependency)
+
+      Section D — DynamoDB Tables (only if has_database == true):
+        - One AWS::DynamoDB::Table per entry in blueprint.dynamodb_tables
+        - Use blueprint schema directly (partition_key, sort_key, gsi)
+        - userId AttributeType is always S (Cognito Sub UUID)
+
+      Section E — S3 Buckets (only if has_file_storage == true):
+        - One AWS::S3::Bucket per entry in blueprint.s3_buckets
+
+      Section F — SharedUtilsLayer (only if output/layers/shared/ exists on disk):
+        ```yaml
+        SharedUtilsLayer:
+          Type: AWS::Serverless::LayerVersion
+          Properties:
+            LayerName: !Sub '${AWS::StackName}-shared-utils'
+            # CRITICAL: ContentUri must point to the RUNTIME-SPECIFIC layer root.
+            # - Python layer   -> layers/shared/
+            # - Node.js layer  -> layers/shared/nodejs/
+            # For Node.js, using layers/shared/ causes SAM to build a broken
+            # double nesting (nodejs/nodejs/...), so /opt/nodejs/shared.js and
+            # /opt/nodejs/shared_utils.js cannot be resolved at runtime.
+            ContentUri: <runtime-specific layer root>
+            CompatibleRuntimes:
+              - <runtime detected from disk>
+            RetentionPolicy: Delete
+          Metadata:
+            BuildMethod: <runtime detected from disk>
+        ```
+        If output/layers/shared/ does NOT exist -> skip this section entirely.
+
+        ⚠️ WHY Metadata: BuildMethod IS NEEDED FOR LAYERS:
+        Unlike Lambda functions (where SAM auto-detects requirements.txt and runs
+        pip install), layers are NOT automatically built. Without Metadata: BuildMethod,
+        SAM just copies ContentUri as-is — it will NOT install third-party dependencies.
+        Adding BuildMethod: <runtime> triggers the pip/npm install workflow during
+        sam build, installing requirements.txt deps into the python/ subdirectory.
+        Always include Metadata: BuildMethod when the layer exists — it is harmless
+        when there are no dependencies (SAM simply skips the install step).
+
+      Section H — SQS Queues (only if blueprint.sqs_queues is non-empty):
+        For each entry in blueprint.sqs_queues:
+        - One AWS::SQS::Queue with VisibilityTimeout from blueprint
+        - One DLQ (AWS::SQS::Queue) if dlq=true in blueprint
+        - Configure RedrivePolicy: deadLetterTargetArn + maxReceiveCount from blueprint
+        ```yaml
+        <LogicalName>:
+          Type: AWS::SQS::Queue
+          Properties:
+            QueueName: !Sub '${AWS::StackName}-<kebab-name>'
+            VisibilityTimeout: <from blueprint>
+            RedrivePolicy:
+              deadLetterTargetArn: !GetAtt <LogicalName>DLQ.Arn
+              maxReceiveCount: <from blueprint>
+        <LogicalName>DLQ:
+          Type: AWS::SQS::Queue
+          Properties:
+            QueueName: !Sub '${AWS::StackName}-<kebab-name>-dlq'
+        ```
+        If blueprint.sqs_queues is empty -> skip this section entirely.
+
+      Section I — EventBridge Rules (only if blueprint.eventbridge_rules is non-empty):
+        For each entry in blueprint.eventbridge_rules:
+        - One AWS::Events::Rule with EventPattern from blueprint (source + detail-type)
+        - Do NOT add Targets or AWS::Lambda::Permission here — those reference
+          Lambda functions defined in the next task. The assembly task will wire them.
+        ```yaml
+        <RuleName>:
+          Type: AWS::Events::Rule
+          Properties:
+            EventPattern:
+              source: ["<source>"]
+              detail-type: ["<detail_type>"]
+        ```
+        If blueprint.eventbridge_rules is empty -> skip this section entirely.
+
+      Section J — Metadata comment for next task:
+        At the very end of the file, append a YAML comment block so the assembly
+        task knows what was included:
+        ```yaml
+        # --- SHARED_RESOURCES_METADATA ---
+        # has_authentication: <true|false>
+        # has_database: <true|false>
+        # has_file_storage: <true|false>
+        # has_async_flows: <true|false>
+        # has_shared_layer: <true|false>
+        # runtime: <runtime>
+        # lambda_invoke_permissions: <JSON array as inline comment>
+        # cognito_user_pool_logical_name: <LogicalName or NONE>
+        # dynamodb_table_logical_names: <comma-separated logical names or NONE>
+        # sqs_queue_logical_names: <comma-separated logical names or NONE>
+        # eventbridge_rule_names: <comma-separated rule names or NONE>
+        # --- END METADATA ---
+        ```
+
+      ============================================================
+      CRITICAL RULES
+      ============================================================
+      1. Write output/template.yaml ONCE, completely.
+      2. Do NOT read any file in output/lambdas/ — that is the next task's job.
+      3. No hardcoded ARNs — use !Ref, !Sub, !GetAtt.
+      4. If blueprint says has_database=false, write NO DynamoDB resources.
+      5. Do NOT use SAMValidateTool — the template is not complete yet
+         (Lambda functions will be appended by the next task). Validation
+         happens only in the final assembly task.
+      6. TWO-TIER KNOWLEDGE RULE:
+         TIER 1 — For resource types COVERED by the sam_reference.md knowledge
+         base (API Gateway, Cognito, DynamoDB, S3, Lambda, SQS, EventBridge),
+         follow the reference templates EXACTLY. Do NOT add extra YAML properties
+         beyond what the reference shows. Example: if the reference Cors block has
+         AllowMethods, AllowHeaders, AllowOrigin — write ONLY those three fields.
+         TIER 2 — For resource types NOT covered in the reference (ElastiCache,
+         OpenSearch, Neptune, RDS, VPC, SecurityGroup, etc.), use your training
+         knowledge to generate correct CloudFormation/SAM definitions. These
+         resources will still be validated by SAMValidateTool in the assembly task.
+    expected_output: |
+      output/template.yaml containing:
+      - SAM template header + Globals + Parameters
+      - API Gateway resource (with or without Cognito authorizer)
+      - Cognito resources (if applicable)
+      - DynamoDB tables (if applicable)
+      - S3 buckets (if applicable)
+      - SharedUtilsLayer declaration (if layers/shared/ exists on disk)
+      - SQS queues + DLQs (if blueprint.sqs_queues is non-empty)
+      - EventBridge rules (if blueprint.eventbridge_rules is non-empty)
+      - Metadata comment block for the next task
+
+  - id: generate_functions_template
+    agent: sam_engineer
+    description: |
+      MISSION: Scan output/lambdas/ domain by domain and generate Lambda function
+      resource definitions. Append results directly to output/template.yaml.
+
+      IMPORTANT: Process ONE domain subdirectory at a time to keep context small.
+      After writing each domain's functions, you can "forget" that domain's handler
+      code — append to template.yaml and move on.
+
+      ============================================================
+      STEP 0: READ BLUEPRINT FOR TRIGGER MAPPING
+      ============================================================
+
+      Read storage/blueprint.json and extract ONLY:
+        * lambda_functions[] — for each entry, record: name, trigger_type,
+          sqs_source (if trigger_type="sqs"), event_pattern (if trigger_type="eventbridge"),
+          publishes_to (if present)
+      This tells you WHICH Lambda is SQS/EventBridge-triggered and WHICH queue/rule
+      it connects to. You CANNOT determine this from handler code alone.
+
+      ============================================================
+      STEP 1: READ METADATA FROM PREVIOUS TASK
+      ============================================================
+
+      Read the last ~20 lines of output/template.yaml and extract from the
+      "--- SHARED_RESOURCES_METADATA ---" comment block:
+        * has_shared_layer (true/false)
+        * has_async_flows (true/false)
+        * runtime
+        * lambda_invoke_permissions (JSON array)
+        * cognito_user_pool_logical_name
+        * sqs_queue_logical_names (comma-separated or NONE)
+        * eventbridge_rule_names (comma-separated or NONE)
+
+      ============================================================
+      STEP 2: DISCOVER ALL DOMAINS
+      ============================================================
+
+      Use FileListTool to list the IMMEDIATE subdirectories of output/lambdas/.
+      These are the domain folders (e.g., bookings/, flights/, users/).
+      Record them as your processing queue.
+
+      If output/lambdas/ has no subdirectories but contains handler.py directly,
+      treat the root as a single "flat" domain.
+
+      ============================================================
+      STEP 3: PROCESS EACH DOMAIN (one at a time)
+      ============================================================
+
+      For EACH domain folder in your queue:
+
+        3a. List the immediate subdirectories inside this domain folder.
+            Each subdirectory = one Lambda function.
+            (e.g., output/lambdas/bookings/bookings-create/ = one Lambda)
+
+        3b. For EACH Lambda subdirectory inside this domain:
+            - Match this directory name against blueprint lambda_functions[].name
+              to find its trigger_type, auth, sqs_source, event_pattern, and publishes_to.
+            - Read handler.py (or handler.js) to find:
+              * handler function name (default: lambda_handler)
+              * ALL os.environ[...] or os.environ.get(...) keys -> env var list
+              * ALL boto3.client/resource calls -> IAM policy list:
+                - boto3.client('dynamodb') or boto3.resource('dynamodb') → DynamoDBCrudPolicy
+                - boto3.client('s3') → S3CrudPolicy
+                - boto3.client('lambda') + .invoke() → LambdaInvokePolicy
+                - boto3.client('sqs') + .send_message() → SQSSendMessagePolicy
+                - boto3.client('events') + .put_events() → EventBridgePutEventsPolicy
+            - Use trigger_type from blueprint (Step 0) to determine the Events block:
+              * trigger_type="api" → Api Event with Path/Method
+              * trigger_type="sqs" → SQS Event with Queue from sqs_source
+              * trigger_type="eventbridge" → NO Events block (Rule Target handles it)
+              * trigger_type="internal" → NO Events block
+            - Derive the CodeUri as: lambdas/<domain>/<function-name>/
+
+        3c. Generate the YAML block for each Lambda in this domain and APPEND
+            to output/template.yaml using WriteFileTool with append=True.
+            This preserves the shared resources and previously written domains.
+
+      Lambda YAML format — API-triggered (trigger_type="api"):
+        ```yaml
+          <LogicalName>:
+            Type: AWS::Serverless::Function
+            Properties:
+              FunctionName: !Sub '${AWS::StackName}-<kebab-name>'
+              CodeUri: lambdas/<domain>/<function-dir>/
+              Handler: handler.<handler_function_name>
+              Layers:
+                - !Ref SharedUtilsLayer   # only if has_shared_layer == true
+              Policies:
+                - DynamoDBCrudPolicy:     # if handler reads/writes DynamoDB
+                    TableName: !Ref <TableLogicalName>
+                - S3CrudPolicy:           # if handler reads/writes S3
+                    BucketName: !Ref <BucketLogicalName>
+                - LambdaInvokePolicy:     # if this function invokes another Lambda (sync)
+                    FunctionName: !Ref <TargetFunctionLogicalName>
+                - SQSSendMessagePolicy:   # if handler sends SQS messages
+                    QueueName: !GetAtt <QueueLogicalName>.QueueName
+                - EventBridgePutEventsPolicy:  # if handler publishes EventBridge events
+                    EventBusName: default
+              Environment:
+                Variables:
+                  ENVIRONMENT: !Ref Environment
+                  TABLE_NAME: !Ref <TableLogicalName>
+                  <QUEUE_URL>: !Ref <QueueLogicalName>  # if publishes to SQS
+                  <OTHER_ENV_KEYS>: <value or !Ref>
+              Events:
+                Api:
+                  Type: Api
+                  Properties:
+                    RestApiId: !Ref MyApi
+                    Path: /<path>
+                    Method: <method>
+                    # ⚠️ AUTH PER-ENDPOINT RULE (CRITICAL):
+                    # Check blueprint lambda_functions[].auth for this function:
+                    # - If auth="required" → do NOT add Auth (inherits DefaultAuthorizer)
+                    # - If auth="none"     → MUST add Auth block to make it public:
+                    Auth:                          # ← ONLY for auth="none" endpoints
+                      Authorizer: NONE             # ← removes Cognito auth for this route
+        ```
+
+      Lambda YAML format — SQS-triggered (trigger_type="sqs"):
+        Use blueprint sqs_source to determine the QueueLogicalName.
+        ```yaml
+          <LogicalName>:
+            Type: AWS::Serverless::Function
+            Properties:
+              FunctionName: !Sub '${AWS::StackName}-<kebab-name>'
+              CodeUri: lambdas/<domain>/<function-dir>/
+              Handler: handler.<handler_function_name>
+              Layers:
+                - !Ref SharedUtilsLayer   # only if has_shared_layer == true
+              Policies:
+                - SQSPollerPolicy:
+                    QueueName: !GetAtt <QueueLogicalName>.QueueName
+                - DynamoDBCrudPolicy:     # if handler reads/writes DynamoDB
+                    TableName: !Ref <TableLogicalName>
+              Environment:
+                Variables:
+                  ENVIRONMENT: !Ref Environment
+                  <OTHER_ENV_KEYS>: <value or !Ref>
+              Events:
+                SQSEvent:
+                  Type: SQS
+                  Properties:
+                    Queue: !GetAtt <QueueLogicalName>.Arn
+                    BatchSize: 10
+        ```
+        NOTE: SQS-triggered Lambdas have NO Api Event. <QueueLogicalName> comes from
+        blueprint lambda_functions[].sqs_source (e.g. "BestsellerUpdateQueue").
+
+      Lambda YAML format — EventBridge-triggered (trigger_type="eventbridge"):
+        ```yaml
+          <LogicalName>:
+            Type: AWS::Serverless::Function
+            Properties:
+              FunctionName: !Sub '${AWS::StackName}-<kebab-name>'
+              CodeUri: lambdas/<domain>/<function-dir>/
+              Handler: handler.<handler_function_name>
+              Layers:
+                - !Ref SharedUtilsLayer   # only if has_shared_layer == true
+              Policies:
+                - DynamoDBCrudPolicy:     # if handler reads/writes DynamoDB
+                    TableName: !Ref <TableLogicalName>
+              Environment:
+                Variables:
+                  ENVIRONMENT: !Ref Environment
+                  <OTHER_ENV_KEYS>: <value or !Ref>
+        ```
+        NOTE: EventBridge-triggered Lambdas have NO Events block. The EventBridge Rule
+        Target (defined in template.yaml) handles invocation.
+        Use blueprint lambda_functions[].event_pattern to verify the correct rule mapping.
+
+      ============================================================
+      STEP 4: HANDLE INTER-LAMBDA PERMISSIONS
+      ============================================================
+
+      After all domains are processed, review the lambda_invoke_permissions list
+      extracted in Step 1. For each {"invoker": "A", "target": "B"} entry:
+      - Ensure the invoker Lambda's YAML already has LambdaInvokePolicy for target B.
+      - Ensure the invoker Lambda's Environment.Variables has
+        <TARGET>_FUNCTION_NAME: !Ref <TargetLogicalName>.
+      If any are missing, update the corresponding function block in
+      output/template.yaml.
+
+      ============================================================
+      STEP 5: WRITE METADATA COMMENT
+      ============================================================
+
+      At the end of output/template.yaml, append (using append=True):
+        ```yaml
+        # --- FUNCTIONS_METADATA ---
+        # total_functions: <count>
+        # logical_names: <comma-separated list of all Lambda logical names>
+        # --- END METADATA ---
+        ```
+
+      ============================================================
+      CRITICAL RULES
+      ============================================================
+      1. Process domains ONE AT A TIME — do not read all handler files at once.
+      2. APPEND to output/template.yaml (use append=True) after each domain; never overwrite.
+      3. CodeUri must exactly match the directory path on disk.
+      4. Every os.environ key found in handler code MUST appear in Environment.Variables.
+      5. Do NOT include DynamoDB/S3/Cognito resource definitions — those are in template.yaml.
+      6. If output/lambdas/ is empty or does not exist, write an empty file with only the metadata comment.
+      7. Do NOT use SAMValidateTool — the template is not complete yet
+         (Outputs and wiring will be added by the next task). Validation
+         happens only in the final assembly task.
+    expected_output: |
+      output/template.yaml updated (via append) with:
+      - All AWS::Serverless::Function resources appended under Resources
+      - Correct CodeUri, Handler, Policies, Environment Variables, and Events for each
+      - Metadata comment block with total function count and logical names
+
+  - id: assemble_final_template
+    agent: sam_engineer
+    description: |
+      MISSION: Finalize output/template.yaml by appending the Outputs section,
+      wiring EventBridge targets (if any), and validating the complete template.
+
+      The previous two tasks have already written the shared infrastructure
+      resources and Lambda function definitions to output/template.yaml via
+      incremental appends. This task only adds what remains.
+
+      ============================================================
+      STEP 1: READ CURRENT TEMPLATE AND BLUEPRINT
+      ============================================================
+
+      Read output/template.yaml to understand what resources exist.
+      NOTE: The file may be large (400+ lines). Use ReadFileTool with
+      start_line/end_line to read in chunks of ~300 lines if needed.
+      Record all resource logical names (DynamoDB tables, SQS queues,
+      Cognito, Lambda functions, SharedUtilsLayer, API Gateway).
+
+      Read storage/blueprint.json and extract ONLY eventbridge_rules[].
+      Skip this read if the SHARED_RESOURCES_METADATA comment in
+      template.yaml shows has_async_flows=false or
+      eventbridge_rule_names=NONE.
+
+      ============================================================
+      STEP 2: WIRE EVENTBRIDGE TARGETS (only if EventBridge Rules exist)
+      ============================================================
+
+      If template.yaml contains AWS::Events::Rule resources that have
+      NO Targets yet:
+
+      For each rule in blueprint.eventbridge_rules, find the matching
+      AWS::Events::Rule resource in template.yaml and update it to add
+      Targets referencing the consumer Lambda functions:
+        Targets:
+          - Arn: !GetAtt <ConsumerLogicalName>.Arn
+            Id: "<ConsumerName>"
+
+      Also append one AWS::Lambda::Permission per target to
+      template.yaml using WriteFileTool with append=True:
+        <ConsumerName>EventPermission:
+          Type: AWS::Lambda::Permission
+          Properties:
+            FunctionName: !Ref <ConsumerLogicalName>
+            Action: lambda:InvokeFunction
+            Principal: events.amazonaws.com
+            SourceArn: !GetAtt <RuleName>.Arn
+
+      To update existing Rule resources with Targets, read the Rule
+      block, rewrite it with Targets added, and use WriteFileTool.
+      Be surgical — only modify the specific Rule resource block.
+
+      If there are NO EventBridge rules, skip this step entirely.
+
+      ============================================================
+      STEP 3: APPEND OUTPUTS SECTION
+      ============================================================
+
+      Append the Outputs section to output/template.yaml using
+      WriteFileTool with append=True:
+
+        Outputs:
+          ApiEndpoint:
+            Description: API Gateway endpoint URL
+            Value: !Sub 'https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+      Add additional outputs based on what exists in the template:
+        - One output per DynamoDB table (TableName + Arn)
+        - UserPoolId and UserPoolClientId (if Cognito resources exist)
+        - SharedUtilsLayerArn (if SharedUtilsLayer exists)
+
+      ============================================================
+      STEP 4: VALIDATE
+      ============================================================
+
+      Run SAMValidateTool with template_path="output/template.yaml".
+      The tool reads the file from disk — do NOT pass file content as an argument.
+
+      If validation errors are found:
+        - Analyze the error message carefully.
+        - Fix ONLY the specific resource/property that caused the error.
+        - COMMON FIX PATTERNS:
+          * "AllowCredentials cannot be true when AllowOrigin is '*'" →
+            REMOVE the AllowCredentials field entirely. Do NOT set it to false.
+          * "Invalid property" → Remove the offending property from the resource.
+          * Type mismatch → Check whether a value should be string vs boolean vs list.
+        - GENERAL PRINCIPLE: When a property causes validation failure and is NOT
+          required for functionality, the safest fix is to REMOVE it rather than
+          trying alternative values.
+        - Write the fixed template to output/template.yaml using WriteFileTool.
+        - Re-run SAMValidateTool with template_path="output/template.yaml".
+        - Repeat until validation passes (max 5 retries).
+        - NEVER write to a different filename (e.g., template_fixed.yaml). The
+          output MUST always be output/template.yaml.
+
+      ============================================================
+      CRITICAL RULES
+      ============================================================
+      1. Do NOT re-read any handler.py files — trust what is already in template.yaml.
+      2. No hardcoded ARNs — use !Ref, !Sub, !GetAtt.
+      3. Must pass SAMValidateTool before finalizing.
+      4. Single output file: output/template.yaml.
+      5. Do NOT cross-check template against output/lambdas/ directories —
+         that is the next agent's (Consistency Validator) responsibility.
+      6. ANTI-LOOP: Once SAMValidateTool returns "Validation Successful",
+         the template is CORRECT. Do NOT re-read template.yaml to "double
+         check". Return your Final Answer immediately.
+         You MUST NOT read template.yaml more than 3 times total in this task.
+    expected_output: |
+      Validated SAM template in output/ directory:
+      - output/template.yaml finalized with Outputs section, EventBridge wiring
+        (if applicable), and validated via SAMValidateTool
+
+      Ready for deployment with 'sam build && sam deploy --guided'.
+
+  # ============================================================
+  # Consistency Validation — closes the pipeline loop by
+  # cross-checking Lambda code against SAM template.
+  # Runs AFTER all SAM Engineer tasks are complete.
+  # context=[] is enforced in main.py for this task ID.
+  # ============================================================
+
+  - id: validate_consistency
+    agent: consistency_validator
+    description: |
+      MISSION: Systematically cross-check the generated Lambda code (output/lambdas/)
+      against the SAM template (output/template.yaml) and the architecture blueprint
+      (storage/blueprint.json). Fix any mismatches found, then re-validate.
+
+      This is the FINAL quality gate before the application is considered deployable.
+
+      EXECUTION MODEL: Steps 1→2→3→4→5 are strictly sequential.
+      Do NOT return to a previous step after completing it.
+
+      ============================================================
+      STEP 1: INVENTORY — Build the ground truth from disk
+      ============================================================
+
+      1a. Use FileListTool to list ALL subdirectories under output/lambdas/ (recursively).
+          Build a map of every Lambda function directory on disk:
+            { "lambdas/orders/orders-get-order/": "handler.py" }
+          Record the handler file name (handler.py or handler.js) for each.
+
+      1b. Read output/template.yaml and extract ALL AWS::Serverless::Function
+          resources. For each, record: LogicalName, CodeUri, Handler,
+          Environment.Variables, Policies, Layers, and Events (Api Path + Method).
+          
+          ⛔ CRITICAL PAGINATION RULE: The template file may be large (500+ lines).
+          If ReadFileTool shows a TRUNCATION warning, you MUST call it again with
+          start_line/end_line to read ALL remaining pages. AWS::Serverless::Function
+          resources are typically in the SECOND HALF of the file (after shared
+          resources like API Gateway, Cognito, DynamoDB). If you only read the first
+          page, you will MISS all Function definitions and produce false findings.
+          NEVER conclude "no Functions exist" until you have read EVERY line of the file.
+
+      1c. Read storage/blueprint.json ONCE and extract lambda_functions (as a
+          reference for expected endpoints), lambda_invoke_permissions,
+          sqs_queues, and eventbridge_rules.
+
+      1d. Check if output/layers/shared/ exists on disk using FileListTool.
+          If it exists, read the shared layer entry point (e.g.,
+          output/layers/shared/python/shared_utils.py) ONCE and record all
+          os.environ / os.environ.get / os.getenv keys found in it. This
+          "shared layer env vars" set will be used in CHECK C4 to avoid
+          false positives for environment variables accessed via shared code.
+
+      ============================================================
+      STEP 2: CHECK — Run 12 consistency checks in 4 phases
+      ============================================================
+
+      Record every mismatch as a finding with:
+        - check_id (e.g., "C1")
+        - severity ("ERROR" or "WARNING")
+        - description (human-readable)
+        - affected_resource (LogicalName or directory)
+        - suggested_fix
+
+      --- Phase A: Structural checks (no handler reading needed) ---
+
+      CHECK C1 — Directory ↔ Function Coverage (bidirectional)
+        - For every Lambda directory on disk: verify a matching Function exists in
+          template.yaml whose CodeUri points to that directory.
+        - For every Function in template.yaml: verify its CodeUri directory exists
+          on disk.
+        - Severity: ERROR
+
+      CHECK C2 — CodeUri Accuracy
+        - For each Function, verify CodeUri ends with "/" and matches an actual
+          disk path.
+        - Severity: ERROR
+
+      --- Phase B: Handler-level checks (read each handler ONCE) ---
+
+      IMPORTANT: For EACH Lambda function, read its handler file exactly ONCE,
+      then perform ALL four checks (C3, C4, C5, C6) on the content you just read
+      before moving to the next Lambda. Do NOT re-read the same handler file.
+
+      CHECK C3 — Handler Validity
+        - Parse the Handler value (e.g., "handler.lambda_handler").
+        - Verify the function name exists in the handler file content.
+        - Python: look for "def lambda_handler(" or the specified function name.
+        - Node.js: look for "exports.handler" / "module.exports.handler".
+        - Severity: ERROR
+
+      CHECK C4 — Environment Variable Completeness
+        - Extract ALL os.environ / os.environ.get / os.getenv keys (Python)
+          or process.env.KEY references (Node.js) from the handler content.
+        - IMPORTANT: If the handler imports from a shared layer (e.g.,
+          "from shared_utils import ..."), also check the shared layer code
+          (output/layers/shared/) for os.environ references. Environment
+          variables accessed indirectly through shared utility functions
+          (e.g., TABLE_NAME read by get_dynamodb_table() in shared_utils.py)
+          count as "used in code".
+        - Compare against the Function's Environment.Variables in template.yaml.
+        - Key used in code (directly or via shared layer) but missing from template → ERROR.
+        - Key in template but not used in code or shared layer → WARNING.
+        - EXCEPTION: The ENVIRONMENT variable defined in Globals is an
+          infrastructure-level parameter — do NOT flag it as unused.
+
+      CHECK C5 — IAM Policy Alignment
+        - From the handler content, check:
+          * boto3.resource('dynamodb') or boto3.client('dynamodb') →
+            must have DynamoDBCrudPolicy
+          * boto3.client('s3') → must have S3CrudPolicy
+          * boto3.client('lambda').invoke() → must have LambdaInvokePolicy
+          * boto3.client('sqs').send_message() → must have SQSSendMessagePolicy
+          * boto3.client('events').put_events() → must have EventBridgePutEventsPolicy
+        - Severity: ERROR
+
+      CHECK C6 — Layer Consistency
+        - From the handler content, check if it imports from the shared layer
+          (e.g., "from shared_utils import" or "require('/opt/nodejs/shared')").
+        - If yes → Function must have "!Ref SharedUtilsLayer" in Layers.
+        - If output/layers/shared/ does NOT exist on disk →
+          template.yaml must NOT reference SharedUtilsLayer.
+        - Severity: ERROR
+
+      --- Phase C: Blueprint matching (no handler reading needed) ---
+
+      CHECK C7 — API Event Matching
+        - For each Function with an Api Event, compare (Path, Method) against the
+          corresponding entry in blueprint.json lambda_functions[].entry_points.
+        - Every blueprint entry_point should be covered by exactly one Function's
+          Api Event.
+        - Severity: ERROR
+
+      CHECK C7b — Per-Endpoint Auth Override
+        - For each API Lambda in blueprint where auth="none":
+            verify the corresponding Function's Api Event in template.yaml
+            has `Auth: Authorizer: NONE` to override the DefaultAuthorizer.
+            Without this, public endpoints will return 401 Unauthorized.
+        - For each API Lambda in blueprint where auth="required":
+            verify the corresponding Function's Api Event does NOT have
+            `Auth: Authorizer: NONE` (it should inherit the DefaultAuthorizer).
+        - Severity: ERROR
+
+      --- Phase D: Async resource checks (only if blueprint has async flows) ---
+
+      CHECK C8 — SQS Resource Consistency
+        - For each sqs_queues entry in blueprint:
+            verify AWS::SQS::Queue exists in template.yaml
+        - For each Lambda with publishes_to containing SQS (in blueprint):
+            verify SQSSendMessagePolicy AND QUEUE_URL environment variable
+            exist in the Function's template definition
+        - For each Lambda with trigger_type="sqs" (in blueprint):
+            verify SQS Event source mapping exists in the Function's template
+        - Severity: ERROR
+
+      CHECK C9 — EventBridge Resource Consistency
+        - For each eventbridge_rules entry in blueprint:
+            verify AWS::Events::Rule exists in template.yaml
+        - For each rule target:
+            verify AWS::Lambda::Permission for EventBridge invocation exists
+        - For each Lambda with trigger_type="eventbridge" (in blueprint):
+            verify it appears as a Target in at least one EventBridge Rule
+        - For each Lambda with publishes_to containing EventBridge (in blueprint):
+            verify EventBridgePutEventsPolicy exists in the Function's template
+        - Severity: ERROR
+
+      CHECK C10 — Dependency File Hygiene
+        - Scan ALL requirements.txt and package.json files under output/ (both
+          output/layers/shared/ and output/lambdas/*/).
+        - Lambda runtime built-ins that must NEVER appear in any dependency file:
+          Python: boto3, botocore, s3transfer, jmespath, urllib3
+          Node.js (nodejs22.x): do NOT treat all `@aws-sdk/*` packages as built-ins.
+          `@aws-sdk/lib-dynamodb` is a required packaged dependency when used.
+        - If a dependency file contains ONLY runtime built-ins → DELETE the file.
+        - If a Lambda has no dependencies beyond runtime built-ins + shared layer →
+          it should NOT have a requirements.txt / package.json. DELETE if found.
+        - Severity: ERROR
+
+      CHECK C11 — Node.js Module System (only if runtime is nodejs*)
+        - Scan ALL handler.js files and shared layer .js files under output/.
+        - Verify NO file uses ESM syntax: `import ... from`, `export const`,
+          `export default`, `export function`, `export {`.
+          All must use CJS: `require(...)`, `exports.handler`, `module.exports`.
+        - Verify NO package.json under output/ contains `"type": "module"`.
+        - If ESM syntax found → convert to CJS in the handler/layer file.
+        - If `"type": "module"` found → remove it from package.json.
+        - Severity: ERROR
+
+      CHECK C12 — Node.js Runtime Import / Dependency Resolution
+        - Applies only when runtime is nodejs*.
+        - Scan ALL handler.js files and shared layer .js files for bare `require('...')`
+          imports (ignore relative paths like `./x`, parent paths like `../x`, and layer
+          entry imports like `/opt/nodejs/shared`).
+        - For each bare import, classify it:
+          * Node built-ins (`fs`, `path`, `crypto`, etc.) → allowed.
+          * `aws-sdk` → ERROR for nodejs22.x. Do NOT use AWS SDK v2; replace with
+            modular AWS SDK v3 packages (`@aws-sdk/*`).
+          * `@aws-sdk/lib-dynamodb` → must be present in the importing scope's
+            package.json (the Lambda package.json or the shared layer package.json).
+          * Any other third-party package (e.g., `uuid`, `jsonwebtoken`) →
+            must be present in the importing scope's package.json. If imported from
+            shared layer code, the dependency must exist in `output/layers/shared/.../package.json`;
+            a Lambda-local package.json does NOT satisfy a shared-layer import.
+        - When a Node.js source file imports a package that is neither runtime-built-in
+          nor declared in the correct package.json, record an ERROR because the deployed
+          Lambda will fail at cold start with ImportModuleError / Cannot find module.
+        - Severity: ERROR
+
+      ============================================================
+      STEP 3: FIX — Resolve all ERROR-level findings (one pass)
+      ============================================================
+
+      Collect ALL ERROR findings from Step 2 and apply fixes in a single batch:
+
+      - C1 (missing Function): Add a new AWS::Serverless::Function block to
+        template.yaml. You already read the handler in Phase B — use that info.
+      - C1 (orphan Function): Remove the Function block from template.yaml.
+      - C2 (bad CodeUri): Correct the CodeUri to match the actual directory path.
+      - C3 (bad Handler): Fix the Handler property in template.yaml.
+      - C4 (missing env var): Add the missing key to Environment.Variables.
+      - C5 (missing policy): Add the required SAM policy to Policies list.
+      - C6 (layer mismatch): Add or remove SharedUtilsLayer references.
+      - C7 (route mismatch): Fix the Api Event Path/Method in template.yaml.
+      - C7b (auth mismatch): Add Auth: Authorizer: NONE for public endpoints,
+        or remove it from authenticated endpoints, in template.yaml.
+      - C8 (SQS mismatch): Add missing SQS queue, SQSSendMessagePolicy, QUEUE_URL
+        env var, or SQS Event source mapping to template.yaml.
+      - C9 (EventBridge mismatch): Add missing EventBridge rule, LambdaPermission,
+        EventBridgePutEventsPolicy, or rule target to template.yaml.
+      - C10 (bad dependency file): Delete the offending requirements.txt / package.json,
+        or remove the runtime built-in entries and delete the file if now empty.
+      - C11 (ESM in Node.js): Convert ESM import/export to CJS require/exports in
+        handler.js and shared layer files. Remove "type": "module" from package.json.
+      - C12 (runtime import mismatch): For nodejs22.x, replace `require('aws-sdk')`
+        with modular `@aws-sdk/*` usage in handler/layer code, and add any missing
+        third-party dependency to the correct package.json (Lambda-local or shared-layer).
+        If the import originates from shared layer code, fix the shared layer package.json
+        rather than only the Lambda package.json.
+
+      After applying ALL fixes, write the updated template.yaml ONCE.
+      If there are zero ERROR findings, skip this step entirely.
+
+      ============================================================
+      STEP 4: RE-VALIDATE
+      ============================================================
+
+      Run SAMValidateTool with template_path="output/template.yaml".
+      If validation fails:
+        - Analyze the cfn-lint error message.
+        - COMMON FIX PATTERNS:
+          * "AllowCredentials cannot be true when AllowOrigin is '*'" →
+            REMOVE AllowCredentials entirely. Do NOT set it to false.
+          * "Invalid property" → Remove the property from the resource.
+          * Type mismatch → Correct the value type (string vs boolean vs list).
+        - GENERAL PRINCIPLE: When a non-essential property causes validation
+          failure, REMOVE it rather than trying alternative values.
+        - Write the fixed template and re-validate (up to 3 retries).
+        - NEVER rename the file. Always write to output/template.yaml.
+      After validation passes (or after 3 retries), proceed to Step 5 regardless.
+
+      ============================================================
+      STEP 5: GENERATE REPORT
+      ============================================================
+
+      Write a validation report to output/consistency_report.json with:
+      ```json
+      {
+        "status": "PASS" or "FAIL",
+        "total_checks": 12,
+        "findings": [
+          {
+            "check_id": "C1",
+            "severity": "ERROR",
+            "description": "...",
+            "affected_resource": "...",
+            "action_taken": "FIXED" or "UNABLE_TO_FIX"
+          }
+        ],
+        "fixes_applied": <count>,
+        "sam_validation": "PASS" or "FAIL",
+        "summary": "All 12 checks passed after applying N fixes."
+      }
+      ```
+
+      ============================================================
+      CRITICAL RULES
+      ============================================================
+      1. Read files from disk — do NOT rely on previous task context.
+      2. Fix template.yaml for infrastructure mismatches; fix handler code ONLY
+         when the handler itself is clearly wrong (e.g., wrong function name).
+      3. Write consistency_report.json even if all checks pass (status="PASS").
+      4. STRICT SEQUENTIAL EXECUTION: Steps 1→2→3→4→5 in order. Do NOT go
+         back to re-run checks after fixing. Checks run ONCE, fixes run ONCE.
+      5. READ LIMITS: template.yaml at most 2 reads total (Step 1 + Step 3 fix).
+         Each handler file at most 1 read (Phase B). blueprint.json at most 1 read.
+      6. ANTI-LOOP: Once SAMValidateTool returns "Validation Successful", proceed
+         immediately to Step 5. Do NOT re-read template.yaml to "include in the
+         final answer". Your Final Answer should be the consistency_report.json
+         content, not the template content.
+    expected_output: |
+      Consistency validation completed:
+      - All 12 cross-checks executed between output/lambdas/ and output/template.yaml
+      - All ERROR-level mismatches fixed
+      - output/template.yaml re-validated with SAMValidateTool
+      - output/consistency_report.json generated with full findings and fix details

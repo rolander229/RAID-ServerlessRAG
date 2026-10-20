@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+build/
+.venv/
+.uvcache/
+.venv-install.log
+
+# Artifacts that live only on v100 and must never be copied back over.
+runs/
+weights/
+*.pt
+*.pth
+*.safetensors
+*.bin
+nohup.out
+.DS_Store
+
+# The deck is a build product of docs/talk/build_slides.py — commit the generator, not the .pptx.
+docs/talk/*.pptx
+
+# Packaging artifacts
+*.bundle
+*.tar.gz
+
+# mono2sls generated artifacts (benchmark data, migration output, RAG index, eval results)
+capsule/before/
+capsule/benchmarks/
+capsule/results/
+capsule/M2S/output/
+capsule/M2S/storage/
+capsule/M2S/.env
+
+# docs/ 本地维护，不再入库
+docs/
+
+# issues 本地维护，不入库
+issues/

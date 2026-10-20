@@ -1,0 +1,52 @@
+import os
+import time
+
+import numpy as np
+import torch
+
+ROOT = os.environ.get("M2S_ROOT", ".")
+DEV = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def timeit(fn, warmup=2, repeat=8):
+    """Average + p95 latency in ms using CUDA events."""
+    for _ in range(warmup):
+        fn()
+    sync()
+    use_cuda = torch.cuda.is_available()
+    vals = []
+    for _ in range(repeat):
+        if use_cuda:
+            s = torch.cuda.Event(enable_timing=True)
+            e = torch.cuda.Event(enable_timing=True)
+            s.record()
+            fn()
+            e.record()
+            sync()
+            vals.append(s.elapsed_time(e))
+        else:
+            t0 = time.perf_counter()
+            fn()
+            vals.append((time.perf_counter() - t0) * 1000.0)
+    arr = np.array(vals)
+    return float(arr.mean()), float(np.percentile(arr, 95))
+
+
+def bytes_of(obj):
+    """Real serialized payload size in bytes."""
+    if isinstance(obj, torch.Tensor):
+        return int(obj.element_size() * obj.nelement())
+    if isinstance(obj, np.ndarray):
+        return int(obj.nbytes)
+    if isinstance(obj, (bytes, bytearray)):
+        return len(obj)
+    try:
+        import pickle
+        return len(pickle.dumps(obj))
+    except Exception:
+        return 0

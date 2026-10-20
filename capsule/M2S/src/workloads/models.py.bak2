@@ -1,0 +1,65 @@
+import os
+import torch
+from torchvision import transforms
+from torchvision.models import (resnet18, ResNet18_Weights,
+                                mobilenet_v3_small, MobileNet_V3_Small_Weights,
+                                shufflenet_v2_x0_5, ShuffleNet_V2_X0_5_Weights)
+from torchvision.models.detection import (ssdlite320_mobilenet_v3_large,
+                                          SSDLite320_MobileNet_V3_Large_Weights)
+from .util import DEV
+
+_CACHE = {}
+
+PRE = transforms.Compose([
+    transforms.Resize(232),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+
+def _get(key, factory):
+    if key not in _CACHE:
+        m = factory()
+        m.to(DEV)
+        m.eval()
+        _CACHE[key] = m
+    return _CACHE[key]
+
+
+def detector():
+    w = SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
+    return _get("ssdlite", lambda: ssdlite320_mobilenet_v3_large(weights=w))
+
+
+def backbone():
+    w = ResNet18_Weights.DEFAULT
+    return _get("resnet18", lambda: resnet18(weights=w))
+
+
+def small_cnn():
+    w = MobileNet_V3_Small_Weights.DEFAULT
+    return _get("mbv3s", lambda: mobilenet_v3_small(weights=w))
+
+
+def tiny_cnn():
+    w = ShuffleNet_V2_X0_5_Weights.DEFAULT
+    return _get("shuff", lambda: shufflenet_v2_x0_5(weights=w))
+
+
+def cls_transform():
+    return PRE
+
+
+def det_transform():
+    return SSDLite320_MobileNet_V3_Large_Weights.DEFAULT.transforms()
+
+
+NAMES = None
+
+
+def label(i):
+    global NAMES
+    if NAMES is None:
+        NAMES = ResNet18_Weights.DEFAULT.meta["categories"]
+    return NAMES[i] if 0 <= i < len(NAMES) else str(i)
