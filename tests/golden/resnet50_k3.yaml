@@ -396,7 +396,7 @@ spec:
         - name: MOPAR_DIFF_SAMPLES
           value: '100'
         - name: MOPAR_DIFF_TOLERANCE
-          value: 1e-4
+          value: '1e-4'
         resources:
           requests:
             cpu: 500m

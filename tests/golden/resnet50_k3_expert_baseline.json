@@ -1,0 +1,214 @@
+{
+  "_meta": {
+    "description": "M2' expert baseline golden: derive_expected(resnet50_manifest, canonical blueprint), human-reviewed before locking. Verified against slice-manifest-to-k8s-mapping-draft.md and metrics-review-k8s.md 3.4 (limits=(alloc+600)*1.3, cpu=ceil(alloc/1769), requests=ceil(footprint)).",
+    "verified": "2026-11-03, hand-checked per-slice numbers vs K0 golden (tests/golden/resnet50_k3.yaml): 947Mi/1m/56Mi (slice0), 947Mi/1m/35Mi (slice1), 947Mi/1m/8Mi (slice2)"
+  },
+  "expected": {
+    "model_key": "resnet50",
+    "namespace": "mopar-dev",
+    "image": "harbor.example/mopar/slice-runner:0.1",
+    "per_slice": [
+      {
+        "slice_id": 0,
+        "deployment_name": "resnet50-slice-0",
+        "service_name": "resnet50-slice-0",
+        "role": "orchestrator",
+        "labels": {
+          "mopar.io/model": "resnet50",
+          "mopar.io/slice-id": "0",
+          "mopar.io/role": "orchestrator",
+          "mopar.io/alloc-mb": "128"
+        },
+        "namespace": "mopar-dev",
+        "image": "harbor.example/mopar/slice-runner:0.1",
+        "replicas": 1,
+        "service_port": 8080,
+        "limits_memory": "947Mi",
+        "limits_memory_mi": 947,
+        "requests_cpu": "1m",
+        "requests_cpu_m": 1,
+        "requests_memory": "56Mi",
+        "requests_memory_mi": 56,
+        "env": {
+          "MOPAR_SLICE_ID": "0",
+          "MOPAR_OUT_PEERS": "resnet50-slice-1.mopar-dev.svc:8080",
+          "MOPAR_TRANSPORT": "dual"
+        },
+        "mounts": [
+          "/activations",
+          "/dev/shm",
+          "/models"
+        ],
+        "probes": {
+          "path": "/healthz",
+          "port": 8080
+        },
+        "shm_size_limit": "256Mi",
+        "layers_count": 137,
+        "outbound_peers": [
+          1
+        ],
+        "inbound_peers": []
+      },
+      {
+        "slice_id": 1,
+        "deployment_name": "resnet50-slice-1",
+        "service_name": "resnet50-slice-1",
+        "role": "worker",
+        "labels": {
+          "mopar.io/model": "resnet50",
+          "mopar.io/slice-id": "1",
+          "mopar.io/role": "worker",
+          "mopar.io/alloc-mb": "128"
+        },
+        "namespace": "mopar-dev",
+        "image": "harbor.example/mopar/slice-runner:0.1",
+        "replicas": 1,
+        "service_port": 8080,
+        "limits_memory": "947Mi",
+        "limits_memory_mi": 947,
+        "requests_cpu": "1m",
+        "requests_cpu_m": 1,
+        "requests_memory": "35Mi",
+        "requests_memory_mi": 35,
+        "env": {
+          "MOPAR_SLICE_ID": "1",
+          "MOPAR_OUT_PEERS": "resnet50-slice-2.mopar-dev.svc:8080",
+          "MOPAR_TRANSPORT": "dual"
+        },
+        "mounts": [
+          "/activations",
+          "/dev/shm",
+          "/models"
+        ],
+        "probes": {
+          "path": "/healthz",
+          "port": 8080
+        },
+        "shm_size_limit": "256Mi",
+        "layers_count": 19,
+        "outbound_peers": [
+          2
+        ],
+        "inbound_peers": [
+          0
+        ]
+      },
+      {
+        "slice_id": 2,
+        "deployment_name": "resnet50-slice-2",
+        "service_name": "resnet50-slice-2",
+        "role": "worker",
+        "labels": {
+          "mopar.io/model": "resnet50",
+          "mopar.io/slice-id": "2",
+          "mopar.io/role": "worker",
+          "mopar.io/alloc-mb": "128"
+        },
+        "namespace": "mopar-dev",
+        "image": "harbor.example/mopar/slice-runner:0.1",
+        "replicas": 1,
+        "service_port": 8080,
+        "limits_memory": "947Mi",
+        "limits_memory_mi": 947,
+        "requests_cpu": "1m",
+        "requests_cpu_m": 1,
+        "requests_memory": "8Mi",
+        "requests_memory_mi": 8,
+        "env": {
+          "MOPAR_SLICE_ID": "2",
+          "MOPAR_OUT_PEERS": "",
+          "MOPAR_TRANSPORT": "dual"
+        },
+        "mounts": [
+          "/activations",
+          "/dev/shm",
+          "/models"
+        ],
+        "probes": {
+          "path": "/healthz",
+          "port": 8080
+        },
+        "shm_size_limit": "256Mi",
+        "layers_count": 2,
+        "outbound_peers": [],
+        "inbound_peers": [
+          1
+        ]
+      }
+    ],
+    "inventory": {
+      "deployments": 3,
+      "services": 3,
+      "ingress": {
+        "file": "40-ingress.yaml",
+        "name": "resnet50-ingress",
+        "path": "/predict",
+        "path_type": "Prefix",
+        "backend_service": "resnet50-slice-0",
+        "backend_port": 8080
+      },
+      "ingress_count_expected": 1,
+      "pvcs": [
+        {
+          "file": "10-pvc-activations.yaml",
+          "name": "mopar-activations",
+          "access_modes": [
+            "ReadWriteMany"
+          ],
+          "storage": "20Gi",
+          "role": "activations"
+        },
+        {
+          "file": "11-pvc-weights.yaml",
+          "name": "mopar-weights",
+          "access_modes": [
+            "ReadOnlyMany"
+          ],
+          "storage": "20Gi",
+          "role": "weights"
+        }
+      ],
+      "configmaps": [
+        {
+          "file": "20-plan-meta-configmap.yaml",
+          "name": "mopar-plan-meta",
+          "keys": [
+            "model_key",
+            "slices_count",
+            "lambda_mb_per_vcpu",
+            "anchor_name",
+            "torch_base_mi",
+            "headroom",
+            "manifest_sha256",
+            "generated_at",
+            "plan_source",
+            "gpu"
+          ]
+        }
+      ],
+      "jobs": [
+        {
+          "file": "50-difftest-job.yaml",
+          "name": "mopar-resnet50-difftest",
+          "endpoint": "resnet50-slice-0.mopar-dev.svc:8080",
+          "samples": 100,
+          "tolerance": "1e-4",
+          "restart_policy": "Never"
+        }
+      ]
+    },
+    "rules_fingerprint": {
+      "anchor_name": "aws-lambda-1769",
+      "lambda_mb_per_vcpu": 1769,
+      "torch_base_mi": 600,
+      "headroom": 1.3,
+      "transport_modes": [
+        "inline",
+        "pvc",
+        "dual"
+      ],
+      "inline_max_mb": 2
+    }
+  }
+}

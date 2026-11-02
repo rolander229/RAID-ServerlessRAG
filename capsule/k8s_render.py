@@ -95,6 +95,22 @@ class RenderParams:
 def _warn(msg: str) -> None:
     print(f"[k8s_render] WARNING: {msg}", file=sys.stderr)
 
+class _ForceQuotedStr(str):
+    """String scalar that must serialize quoted.
+
+    PyYAML (YAML 1.1) writes 1e-4 unquoted and re-reads it as a string, but
+    Go yaml parsers (yaml.v2, i.e. kubectl/client-go) resolve 1e-4 as a
+    NUMBER, and env.value requires a string -- kubectl apply would reject
+    the manifest.  Anything numeric-looking goes through this class.
+    """
+
+
+def _quoted_representer(dumper, data):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", str(data), style="'")
+
+
+yaml.SafeDumper.add_representer(_ForceQuotedStr, _quoted_representer)
+
 
 def k8s_name(name: str) -> str:
     """manifest names use ``_``; K8s object names are DNS-1123 (``-`` only)."""
@@ -341,7 +357,7 @@ def _difftest_job_doc(params: RenderParams, model: str, model_key: str, slice0_n
                                 {"name": "MOPAR_MODEL", "value": model_key},
                                 {"name": "MOPAR_SLICES_COUNT", "value": str(slices_count)},
                                 {"name": "MOPAR_DIFF_SAMPLES", "value": str(params.diff_samples)},
-                                {"name": "MOPAR_DIFF_TOLERANCE", "value": params.diff_tolerance},
+                                {"name": "MOPAR_DIFF_TOLERANCE", "value": _ForceQuotedStr(params.diff_tolerance)},
                             ],
                             "resources": {
                                 "requests": {"cpu": "500m", "memory": "512Mi"},
