@@ -89,7 +89,8 @@ class SliceCapsuleBridge:
                 "max_tensor_diff": 0.0,
                 "slices": slices_manifest,
                 "expanded_parts": [s["layers"] for s in slice_defs],
-                "stats": {"node_reduction": 0.65}
+                "stats": {"node_reduction": 0.65},
+                "plan_source": "hardcoded"
             }
 
         model, inputs = zoo.load(model_key, device=device)
@@ -150,7 +151,8 @@ class SliceCapsuleBridge:
             "max_tensor_diff": max_tensor_diff,
             "slices": slices_manifest,
             "expanded_parts": expanded_parts,
-            "stats": stats
+            "stats": stats,
+            "plan_source": "dp_solve"
         }
 
     def generate_capsule_artifacts(

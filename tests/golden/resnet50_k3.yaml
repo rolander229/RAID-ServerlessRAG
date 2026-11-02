@@ -1,0 +1,418 @@
+# file: 10-pvc-activations.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mopar-activations
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/role: activations
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+# file: 11-pvc-weights.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mopar-weights
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/role: weights
+spec:
+  accessModes:
+  - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+# file: 20-plan-meta-configmap.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mopar-plan-meta
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+data:
+  model_key: resnet50
+  slices_count: '3'
+  lambda_mb_per_vcpu: '1769'
+  anchor_name: aws-lambda-1769
+  torch_base_mi: '600'
+  headroom: '1.3'
+  manifest_sha256: d94fe89e494042bc78eb14c4e6afe9ec53b8afa004d9fbe557278ef98e985ae2
+  generated_at: '2026-11-02T00:00:00Z'
+  plan_source: dp_solve
+  gpu: not-required
+# file: 30-resnet50-slice-0.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resnet50-slice-0
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '0'
+    mopar.io/role: orchestrator
+    mopar.io/alloc-mb: '128'
+  annotations:
+    mopar.io/lambda-mb-per-vcpu: '1769'
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mopar.io/model: resnet50
+      mopar.io/slice-id: '0'
+  template:
+    metadata:
+      labels:
+        mopar.io/model: resnet50
+        mopar.io/slice-id: '0'
+        mopar.io/role: orchestrator
+        mopar.io/alloc-mb: '128'
+    spec:
+      containers:
+      - name: slice
+        image: harbor.example/mopar/slice-runner:0.1
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: MOPAR_SLICE_ID
+          value: '0'
+        - name: MOPAR_OUT_PEERS
+          value: resnet50-slice-1.mopar-dev.svc:8080
+        - name: MOPAR_TRANSPORT
+          value: dual
+        resources:
+          requests:
+            cpu: 1m
+            memory: 56Mi
+          limits:
+            memory: 947Mi
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+        - name: weights
+          mountPath: /models
+          readOnly: true
+        - name: activations
+          mountPath: /activations
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      - name: weights
+        persistentVolumeClaim:
+          claimName: mopar-weights
+          readOnly: true
+      - name: activations
+        persistentVolumeClaim:
+          claimName: mopar-activations
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resnet50-slice-0
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '0'
+    mopar.io/role: orchestrator
+spec:
+  type: ClusterIP
+  selector:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '0'
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+# file: 30-resnet50-slice-1.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resnet50-slice-1
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '1'
+    mopar.io/role: worker
+    mopar.io/alloc-mb: '128'
+  annotations:
+    mopar.io/lambda-mb-per-vcpu: '1769'
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mopar.io/model: resnet50
+      mopar.io/slice-id: '1'
+  template:
+    metadata:
+      labels:
+        mopar.io/model: resnet50
+        mopar.io/slice-id: '1'
+        mopar.io/role: worker
+        mopar.io/alloc-mb: '128'
+    spec:
+      containers:
+      - name: slice
+        image: harbor.example/mopar/slice-runner:0.1
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: MOPAR_SLICE_ID
+          value: '1'
+        - name: MOPAR_OUT_PEERS
+          value: resnet50-slice-2.mopar-dev.svc:8080
+        - name: MOPAR_TRANSPORT
+          value: dual
+        resources:
+          requests:
+            cpu: 1m
+            memory: 35Mi
+          limits:
+            memory: 947Mi
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+        - name: weights
+          mountPath: /models
+          readOnly: true
+        - name: activations
+          mountPath: /activations
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      - name: weights
+        persistentVolumeClaim:
+          claimName: mopar-weights
+          readOnly: true
+      - name: activations
+        persistentVolumeClaim:
+          claimName: mopar-activations
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resnet50-slice-1
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '1'
+    mopar.io/role: worker
+spec:
+  type: ClusterIP
+  selector:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '1'
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+# file: 30-resnet50-slice-2.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resnet50-slice-2
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '2'
+    mopar.io/role: worker
+    mopar.io/alloc-mb: '128'
+  annotations:
+    mopar.io/lambda-mb-per-vcpu: '1769'
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mopar.io/model: resnet50
+      mopar.io/slice-id: '2'
+  template:
+    metadata:
+      labels:
+        mopar.io/model: resnet50
+        mopar.io/slice-id: '2'
+        mopar.io/role: worker
+        mopar.io/alloc-mb: '128'
+    spec:
+      containers:
+      - name: slice
+        image: harbor.example/mopar/slice-runner:0.1
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: MOPAR_SLICE_ID
+          value: '2'
+        - name: MOPAR_OUT_PEERS
+          value: ''
+        - name: MOPAR_TRANSPORT
+          value: dual
+        resources:
+          requests:
+            cpu: 1m
+            memory: 8Mi
+          limits:
+            memory: 947Mi
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+        - name: weights
+          mountPath: /models
+          readOnly: true
+        - name: activations
+          mountPath: /activations
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      - name: weights
+        persistentVolumeClaim:
+          claimName: mopar-weights
+          readOnly: true
+      - name: activations
+        persistentVolumeClaim:
+          claimName: mopar-activations
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resnet50-slice-2
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '2'
+    mopar.io/role: worker
+spec:
+  type: ClusterIP
+  selector:
+    mopar.io/model: resnet50
+    mopar.io/slice-id: '2'
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+# file: 40-ingress.yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: resnet50-ingress
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /predict
+        pathType: Prefix
+        backend:
+          service:
+            name: resnet50-slice-0
+            port:
+              number: 8080
+# file: 50-difftest-job.yaml
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mopar-resnet50-difftest
+  namespace: mopar-dev
+  labels:
+    mopar.io/model: resnet50
+    mopar.io/role: difftest
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        mopar.io/model: resnet50
+        mopar.io/role: difftest
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: difftest
+        image: harbor.example/mopar/difftest:0.1
+        env:
+        - name: MOPAR_ENDPOINT
+          value: resnet50-slice-0.mopar-dev.svc:8080
+        - name: MOPAR_MODEL
+          value: resnet50
+        - name: MOPAR_SLICES_COUNT
+          value: '3'
+        - name: MOPAR_DIFF_SAMPLES
+          value: '100'
+        - name: MOPAR_DIFF_TOLERANCE
+          value: 1e-4
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+        volumeMounts:
+        - name: activations
+          mountPath: /activations
+        - name: weights
+          mountPath: /models
+          readOnly: true
+      volumes:
+      - name: activations
+        persistentVolumeClaim:
+          claimName: mopar-activations
+      - name: weights
+        persistentVolumeClaim:
+          claimName: mopar-weights
