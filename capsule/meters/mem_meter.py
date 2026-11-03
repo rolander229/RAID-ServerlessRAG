@@ -165,13 +165,26 @@ def _sample_until_done(pid: int, channel, report: dict) -> None:
 
 
 def measure(model_key: str, slices: int = 3, n_iters: int = 6, seed: int = 0,
-            device: str = "cpu") -> dict:
-    """跑一遍 D2 计量；返回逐片 peak/alloc（双口径）与聚合削减率。"""
+            device: str = "cpu", parts_override: list[list[str]] | None = None,
+            manifest_allocs: dict[int, float] | None = None) -> dict:
+    """跑一遍 D2 计量；返回逐片 peak/alloc（双口径）与聚合削减率。
+
+    (A4 vgg16 e2e) ``parts_override``：外部 manifest 的 expanded_parts 是权威
+    切分（fixture 用画像时序切出；无画像 DP 重推导 vgg16 得 [1, 38]，不可
+    部署为链）。``manifest_allocs``：manifest 逐片 alloc_mb 作为被测配额——
+    PlatformConfig 解析式重算在本仓口径下会逐字节复现（vgg16: 128/128/448/128），
+    并列记录以供交叉核对。
+    """
     import multiprocessing as mp
 
     model, inputs = zoo.load(model_key, device=device, seed=seed)
     program = record(model, inputs, name=model_key, device=device)
-    parts = expand_parts(program, slices)
+    if parts_override is not None:
+        parts = [list(part) for part in parts_override]
+        print("[mem_meter] plan from external manifest: %d slices %s"
+              % (len(parts), [len(part) for part in parts]))
+    else:
+        parts = expand_parts(program, slices)
     cases = program.slices(parts)
     platform = PlatformConfig()
 
@@ -203,9 +216,13 @@ def measure(model_key: str, slices: int = 3, n_iters: int = 6, seed: int = 0,
                         "steps": len(case.steps)}
         _sample_until_done(child.pid, channel, report)
         child.join()
-        alloc_mb = platform.allocate_mb(slice_footprint(program.graph, parts[case.index]))
+        alloc_platform = platform.allocate_mb(slice_footprint(program.graph, parts[case.index]))
+        alloc_mb = manifest_allocs.get(case.index, alloc_platform) \
+            if manifest_allocs is not None else alloc_platform
         base_mb = report.get("resident_mb", 0.0)
         report["alloc_mb"] = alloc_mb
+        if manifest_allocs is not None:
+            report["alloc_mb_platform_derived"] = round(alloc_platform, 1)
         report["base_mb_after_trim"] = round(base_mb, 1)
         report["serving_peak_mb"] = round(report["serving_peak_mb"], 1)
         report["net_peak_mb"] = round(max(0.0, report["serving_peak_mb"] - base_mb), 1)
@@ -241,7 +258,9 @@ def measure(model_key: str, slices: int = 3, n_iters: int = 6, seed: int = 0,
     mc_sliced = sum(r["alloc_mb"] * r["active_s_mean"] for r in rows)
     mc_mono = mono_alloc * mono_active
     summary = {
-        "model_key": model_key, "slices": slices, "n_iters": n_iters, "seed": seed,
+        "model_key": model_key, "slices": len(parts) if parts_override is not None else slices,
+        "plan_source": "manifest" if parts_override is not None else "dp_solve",
+        "n_iters": n_iters, "seed": seed,
         "device": device, "sample_hz": SAMPLE_HZ,
         "per_slice": rows,
         "monolith": {"serving_peak_mb": round(mono_peak, 1),
@@ -274,9 +293,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n-iters", type=int, default=6)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--manifest", default=None,
+                        help="plan JSON with expanded_parts (e.g. tests/fixtures/"
+                             "vgg16_manifest.json); overrides --slices re-derivation")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
-    report = measure(args.model, args.slices, args.n_iters, args.seed, args.device)
+    parts_override, manifest_allocs = None, None
+    if args.manifest:
+        manifest = json.loads(Path(args.manifest).read_text())
+        parts_override = manifest["expanded_parts"]
+        manifest_allocs = {row["slice_id"]: row["alloc_mb"]
+                           for row in manifest.get("slices", [])
+                           if row.get("alloc_mb") is not None}
+    report = measure(args.model, args.slices, args.n_iters, args.seed, args.device,
+                     parts_override=parts_override, manifest_allocs=manifest_allocs)
     out = args.out or ("runs/mem_meter_%s_k%d.json" % (args.model, args.slices))
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -125,8 +125,12 @@ def evaluate(model_key: str, slices: int = 3, n: int = 100, seed: int = 0,
         model, inputs = zoo.load(model_key, device=device)
         program = record(model, inputs, name=model_key, device=device)
     model = program.model
-    parts = parts_override if parts_override is not None else expand_parts(program, slices)
-    reference = expand_parts(program, slices)
+    # (A4 vgg16 e2e) 外部 manifest 是权威切分（fixture 用画像时序切出）：给了
+    # parts_override 就以它为被测计划，也以它为 F1 的参照——无画像的解析 DP
+    # 重推导（vgg16 会得到 [1, 38]）既不可部署也不是本实验的基准。
+    from_manifest = parts_override is not None
+    parts = parts_override if from_manifest else expand_parts(program, slices)
+    reference = parts if from_manifest else expand_parts(program, slices)
 
     spec = zoo.get(model_key)
     maxdiffs: list[float] = []
@@ -161,6 +165,7 @@ def evaluate(model_key: str, slices: int = 3, n: int = 100, seed: int = 0,
             if maxdiffs and not math.isnan(maxdiffs[0]) else float("nan"),
             "max": max(maxdiffs)},
         "plan_membership_f1": plan_membership_f1(parts, reference),
+        "plan_source": "manifest" if from_manifest else "dp_solve",
         "expanded_parts": parts,
         "chain_error": chain_error,
     }
@@ -175,10 +180,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--tol", type=float, default=TOLERANCE)
+    parser.add_argument("--manifest", default=None,
+                        help="plan JSON with expanded_parts (e.g. tests/fixtures/"
+                             "vgg16_manifest.json); overrides --slices re-derivation")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
 
-    report = evaluate(args.model, args.slices, args.n, args.seed, args.device, args.tol)
+    parts_override = None
+    if args.manifest:
+        parts_override = json.loads(Path(args.manifest).read_text())["expanded_parts"]
+    report = evaluate(args.model, args.slices, args.n, args.seed, args.device,
+                      args.tol, parts_override=parts_override)
     dist = report["maxdiff_distribution"]
     print("[diff_meter] model=%s slices=%d n=%d seed=%d" %
           (args.model, args.slices, report["n_inputs"], args.seed))

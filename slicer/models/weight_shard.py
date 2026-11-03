@@ -224,15 +224,27 @@ def expand_parts(prog: Program, slices: int) -> list[list[str]]:
 
 
 def verify(model_key: str, slices: int, device: str = "cpu",
-           out_root: str | Path = "runs") -> dict:
+           out_root: str | Path = "runs",
+           parts_override: list[list[str]] | None = None) -> dict:
     """record -> vertical_partition -> export -> reload-from-shards -> chained run.
+
+    ``parts_override`` (A4 vgg16 e2e): take the cut from an external manifest
+    (tests/fixtures/vgg16_manifest.json) instead of re-deriving it -- the
+    fixture was cut with *profiled* timing, and the analytic DP here reproduces
+    a different plan (vgg16: [1, 38] vs the fixture's [24, 7, 2, 6]), so the
+    shards must follow the manifest for the whole chain to stay consistent.
 
     Returns the acceptance record: per-slice tensor counts, the chained-vs-
     monolith max diff, and which files carried it.
     """
     model, inputs = zoo.load(model_key, device=device)
     prog = record(model, inputs, name=model_key, device=device)
-    parts = expand_parts(prog, slices)
+    if parts_override is not None:
+        parts = [list(part) for part in parts_override]
+        print("[shard] plan from external manifest: %d slices %s"
+              % (len(parts), [len(part) for part in parts]))
+    else:
+        parts = expand_parts(prog, slices)
 
     out_dir = Path(out_root) / "weights" / model_key
     manifest = export_shards(prog, parts, out_dir)
@@ -255,6 +267,7 @@ def verify(model_key: str, slices: int, device: str = "cpu",
     max_diff = max(diffs) if diffs else 0.0
     report = {"model_key": model_key, "slices": slices, "device": device,
               "max_diff": max_diff, "per_output_max_diff": diffs,
+              "plan_source": "manifest" if parts_override is not None else "dp_solve",
               "shards": manifest["shards"], "out_dir": str(out_dir)}
     print("[shard] chained vs monolith max-diff = %.3e (tolerance 1e-4) -> %s"
           % (max_diff, "PASS" if max_diff <= 1e-4 else "FAIL"))
@@ -267,9 +280,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--slices", type=int, default=3)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--out-root", default="runs")
+    parser.add_argument("--manifest", default=None,
+                        help="plan JSON with expanded_parts (e.g. tests/fixtures/"
+                             "vgg16_manifest.json); overrides --slices re-derivation")
     parser.add_argument("--json", default=None, help="write the acceptance report here")
     args = parser.parse_args(argv)
-    report = verify(args.model, args.slices, args.device, args.out_root)
+    parts_override = None
+    if args.manifest:
+        parts_override = json.loads(Path(args.manifest).read_text())["expanded_parts"]
+    report = verify(args.model, args.slices, args.device, args.out_root, parts_override)
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps(report, indent=2), encoding="utf-8")
