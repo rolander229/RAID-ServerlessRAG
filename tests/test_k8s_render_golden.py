@@ -85,7 +85,7 @@ class K8sRenderGoldenTest(unittest.TestCase):
         files = render(manifest, RenderParams(image="img:1", generated_at="T"))
         res0 = resources_of(files, "30-alpha-slice-0.yaml")
         self.assertEqual(res0["limits"]["memory"], "947Mi")  # ceil((128+600)*1.3) = ceil(946.4)
-        self.assertEqual(res0["requests"]["cpu"], "1m")      # ceil(128/1769) = 1
+        self.assertEqual(res0["requests"]["cpu"], 1)      # ceil(128/1769) = 1
         self.assertEqual(res0["requests"]["memory"], "100Mi")
         res1 = resources_of(files, "30-alpha-slice-1.yaml")
         self.assertEqual(res1["requests"]["memory"], "101Mi")  # ceil(100.4)

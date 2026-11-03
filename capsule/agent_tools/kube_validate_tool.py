@@ -545,10 +545,10 @@ def _check_d4(doc: Dict[str, Any], slice: Dict[str, Any], fname, torch_base,
     else:
         try:
             got = parse_cpu_m(cpu)
-            if got != expected_cpu:
+            if got != expected_cpu * 1000:
                 findings.append(_finding("V-RES-002", "error", fname, "D4",
                                          f"slice {sid} ({name}): requests.cpu {cpu} = {got}m, expected "
-                                         f"{expected_cpu}m = ceil(alloc {alloc:g} / {lam} MB-per-vCPU)"))
+                                         f"{expected_cpu * 1000}m = ceil(alloc {alloc:g} / {lam} MB-per-vCPU)"))
         except ValueError as exc:
             findings.append(_finding("V-RES-002", "error", fname, "D4",
                                      f"slice {sid} ({name}): unparseable requests.cpu {cpu!r}: {exc}"))

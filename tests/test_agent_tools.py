@@ -56,7 +56,7 @@ class TestRenderTool(unittest.TestCase):
         # numbers extracted from the rendered YAML, not recomputed
         slice0 = out["summary"]["per_slice"][0]
         self.assertEqual(slice0["limits_memory"], "947Mi")
-        self.assertEqual(slice0["requests_cpu"], "1m")
+        self.assertEqual(slice0["requests_cpu"], 1)
         self.assertEqual(slice0["requests_memory"], "56Mi")
 
     def test_deterministic_with_pinned_generated_at(self):

@@ -256,7 +256,7 @@ def _deployment_doc(s: Dict[str, Any], params: RenderParams, model: str, name_by
                                 {"name": "MOPAR_TRANSPORT", "value": "dual"},
                             ],
                             "resources": {
-                                "requests": {"cpu": f"{cpu_m}m", "memory": f"{request_mi}Mi"},
+                                "requests": {"cpu": cpu_m, "memory": f"{request_mi}Mi"},
                                 "limits": {"memory": f"{limit_mi}Mi"},
                             },
                             "volumeMounts": mounts,

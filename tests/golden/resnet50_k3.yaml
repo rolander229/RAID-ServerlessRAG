@@ -93,7 +93,7 @@ spec:
           value: dual
         resources:
           requests:
-            cpu: 1m
+            cpu: 1
             memory: 56Mi
           limits:
             memory: 947Mi
@@ -191,7 +191,7 @@ spec:
           value: dual
         resources:
           requests:
-            cpu: 1m
+            cpu: 1
             memory: 35Mi
           limits:
             memory: 947Mi
@@ -289,7 +289,7 @@ spec:
           value: dual
         resources:
           requests:
-            cpu: 1m
+            cpu: 1
             memory: 8Mi
           limits:
             memory: 947Mi

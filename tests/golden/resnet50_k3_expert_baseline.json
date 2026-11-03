@@ -1,7 +1,7 @@
 {
   "_meta": {
     "description": "M2' expert baseline golden: derive_expected(resnet50_manifest, canonical blueprint), human-reviewed before locking. Verified against slice-manifest-to-k8s-mapping-draft.md and metrics-review-k8s.md 3.4 (limits=(alloc+600)*1.3, cpu=ceil(alloc/1769), requests=ceil(footprint)).",
-    "verified": "2026-11-03, hand-checked per-slice numbers vs K0 golden (tests/golden/resnet50_k3.yaml): 947Mi/1m/56Mi (slice0), 947Mi/1m/35Mi (slice1), 947Mi/1m/8Mi (slice2)"
+    "verified": "2026-11-03, hand-checked per-slice numbers vs K0 golden (tests/golden/resnet50_k3.yaml): 947Mi/1/56Mi (slice0), 947Mi/1/35Mi (slice1), 947Mi/1/8Mi (slice2)"
   },
   "expected": {
     "model_key": "resnet50",
@@ -25,7 +25,7 @@
         "service_port": 8080,
         "limits_memory": "947Mi",
         "limits_memory_mi": 947,
-        "requests_cpu": "1m",
+        "requests_cpu": 1,
         "requests_cpu_m": 1,
         "requests_memory": "56Mi",
         "requests_memory_mi": 56,
@@ -67,7 +67,7 @@
         "service_port": 8080,
         "limits_memory": "947Mi",
         "limits_memory_mi": 947,
-        "requests_cpu": "1m",
+        "requests_cpu": 1,
         "requests_cpu_m": 1,
         "requests_memory": "35Mi",
         "requests_memory_mi": 35,
@@ -111,7 +111,7 @@
         "service_port": 8080,
         "limits_memory": "947Mi",
         "limits_memory_mi": 947,
-        "requests_cpu": "1m",
+        "requests_cpu": 1,
         "requests_cpu_m": 1,
         "requests_memory": "8Mi",
         "requests_memory_mi": 8,
