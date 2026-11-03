@@ -64,11 +64,13 @@ TASKS: list = [
             "Render the K8s manifests for the manifest below using the "
             "blueprint produced earlier.  Call k8s_render_tool -- do NOT write "
             "YAML yourself, do NOT compute any resource number.\n"
-            'Emit: {{"tool": "k8s_render_tool", "args": {{"manifest_ref": '
-            '"<path or literal manifest>", "blueprint_ref": "<path or literal '
-            'blueprint>", "params": {{"generated_at": "<ISO-8601 UTC>"}}}}}}\n'
-            "The runner resolves manifest_ref/blueprint_ref to the pipeline "
-            "artifacts and pins generated_at for byte-level determinism.\n\n"
+            "The slice manifest and the blueprint are INJECTED INTO THE TOOL "
+            "BY THE RUNNER (server-side): you cannot and must not pass file "
+            "paths or file contents.  Emit exactly:\n"
+            '{{"tool": "k8s_render_tool", "args": {{}}}}\n'
+            "Any extra args you emit (manifest_ref, blueprint_ref, params) are "
+            "recorded as overrides and discarded -- the runner pins "
+            "generated_at for byte-level determinism.\n\n"
             "MANIFEST SUMMARY:\n{manifest_summary}\n\n"
             "BLUEPRINT (blueprint.json):\n{blueprint}\n"
         ),
@@ -103,8 +105,9 @@ TASKS: list = [
             "Validate the final manifests below (after overlay application) "
             "against the manifest and blueprint.  Call kube_validate_tool -- "
             "its rule set is the D4/D5 gate; do not re-derive anything.\n"
-            'Emit: {{"tool": "kube_validate_tool", "args": {{}}}}  (the runner '
-            "supplies the rendered files, manifest and blueprint).\n\n"
+            'Emit exactly: {{"tool": "kube_validate_tool", "args": {{}}}}  -- '
+            "the runner injects the rendered files, manifest and blueprint "
+            "server-side; do not pass file paths.\n\n"
             "MANIFEST SUMMARY:\n{manifest_summary}\n\n"
             "BLUEPRINT (blueprint.json):\n{blueprint}\n\n"
             "FINAL MANIFEST FILES:\n{render_files}\n"

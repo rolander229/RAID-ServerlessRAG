@@ -244,5 +244,38 @@ class TestInterception(unittest.TestCase):
                       report["interceptions"][-1]["what"])
 
 
+class TestServerSideArgInjection(unittest.TestCase):
+    """RQ2 data point (2026-11-03 real-LLM first run): deepseek-flash
+    hallucinated {"manifest_ref": "manifest.json"} -> FileNotFoundError.
+    Regression: the runner must inject canonical state regardless of what the
+    LLM passes, record the override, and still complete the pipeline."""
+
+    def test_hallucinated_manifest_path_is_overridden(self):
+        manifest = load_manifest(FIXTURE)
+        responses = build_fake_responses(manifest, STAMP)
+        responses["engineer_render"] = (
+            '```json\n{"tool": "k8s_render_tool", "args": '
+            '{"manifest_ref": "manifest.json", '
+            '"params": {"generated_at": "1999-01-01T00:00:00Z"}}}\n```')
+        with tempfile.TemporaryDirectory(prefix="m2s-halluc-") as tmp:
+            report = fake_run(Path(tmp), responses=responses)
+        self.assertTrue(report["summary"]["pass"], msg=report["interceptions"])
+        overrides = report["llm_arg_overrides"]
+        self.assertEqual([o["arg"] for o in overrides],
+                         ["manifest_ref", "params"])
+        self.assertEqual(overrides[0]["provided"], "manifest.json")
+        self.assertIn("overridden", overrides[0]["action"])
+        # determinism: the runner's stamp won, not the hallucinated one
+        self.assertEqual(report["generated_at"], STAMP)
+
+    def test_clean_tool_call_records_no_overrides(self):
+        manifest = load_manifest(FIXTURE)
+        responses = build_fake_responses(manifest, STAMP)
+        with tempfile.TemporaryDirectory(prefix="m2s-cleanargs-") as tmp:
+            report = fake_run(Path(tmp), responses=responses)
+        self.assertTrue(report["summary"]["pass"])
+        self.assertEqual(report["llm_arg_overrides"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

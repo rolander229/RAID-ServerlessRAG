@@ -15,6 +15,12 @@ Tool surface is deliberately CrewAI-compatible: plain callable class with
 ``name`` / ``description`` attributes and a ``run(**kwargs) -> dict`` method
 (swapping in crewai.tools.BaseTool later only adds a pydantic args_schema).
 
+PIPELINE ARG INJECTION (RQ2 hardening, 2026-11-03): inside the M2' pipeline
+the runner injects the manifest and blueprint server-side -- the calling LLM
+never supplies file paths (deepseek-flash hallucinated "manifest.json" on the
+first real run; the runner now records and overrides any such arguments).
+Standalone callers (tests, CLI tools) may still pass a path or dict directly.
+
 The blueprint schema lives here (BLUEPRINT_FIELDS) and is mirrored by
 capsule/m2s_k8s/roles.py (Architect prompt) and the FakeLLM canned response.
 """
@@ -141,10 +147,13 @@ class K8sRenderTool:
     name = "k8s_render_tool"
     description = (
         "Deterministically render slice_manifest.json + Architect blueprint into "
-        "Kubernetes YAML documents. Input: manifest (path or dict), blueprint (dict), "
-        "optional params {generated_at, diff_image, ...}. Returns "
-        "{'files': {name: yaml_text}, 'summary': {...}}. Resource numbers are "
-        "computed here and may not be edited downstream (overlay-only boundary)."
+        "Kubernetes YAML documents. In the M2' pipeline the manifest and "
+        "blueprint are injected by the runner (server-side) -- the calling LLM "
+        "does NOT provide file paths; standalone callers may pass manifest "
+        "(path or dict), blueprint (dict) and optional params {generated_at}. "
+        "Returns {'files': {name: yaml_text}, 'summary': {...}}. Resource "
+        "numbers are computed here and may not be edited downstream "
+        "(overlay-only boundary)."
     )
 
     def run(self,

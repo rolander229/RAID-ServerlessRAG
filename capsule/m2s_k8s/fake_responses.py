@@ -132,16 +132,12 @@ def build_fake_responses(manifest: Dict[str, Any],
     stamp = generated_at or "2026-11-03T00:00:00Z"
     adapters = "\n".join(_adapter_text(manifest, s)
                          for s in manifest.get("slices", []))
+    # Minimal tool-call contract: manifest/blueprint/generated_at are injected
+    # server-side by the runner (RQ2 hardening) -- the canned Engineer emits
+    # the tool name only, exactly as a well-behaved real LLM should.
     render_call = (
         "```json\n" +
-        json.dumps({
-            "tool": "k8s_render_tool",
-            "args": {
-                "manifest_ref": "state.manifest",
-                "blueprint_ref": "state.blueprint.json",
-                "params": {"generated_at": stamp},
-            },
-        }, indent=2)
+        json.dumps({"tool": "k8s_render_tool", "args": {}}, indent=2)
         + "\n```"
     )
     overlay = (

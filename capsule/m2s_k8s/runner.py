@@ -426,6 +426,7 @@ def run(manifest_path: Union[str, Path],
     report["validation"] = state["validation"]
     report["signoff"] = state.get("signoff")
     report["expert_baseline"] = state.get("expert_check")
+    report["llm_arg_overrides"] = state.get("llm_arg_overrides", [])
     report["tasks"] = recorder.steps
     for s in recorder.steps:
         if s["status"] == "running":
@@ -574,15 +575,27 @@ def _run_task(task, state, llm_client, generated_at, run_kubeconform) -> None:
             raise PipelineError(
                 f"engineer_render must call k8s_render_tool, got {call.get('tool')!r}")
         args = call.get("args") or {}
-        params = dict(args.get("params") or {})
-        params.setdefault("generated_at", generated_at)
-        # resolve refs -- the LLM never passes inline resource numbers
-        manifest_arg = args.get("manifest_ref", args.get("manifest"))
-        blueprint_arg = args.get("blueprint_ref", args.get("blueprint"))
-        manifest = state["manifest"] if manifest_arg in (None, "state.manifest") \
-            else load_manifest(manifest_arg)
-        blueprint = state["blueprint"] if blueprint_arg in (None, "state.blueprint.json") \
-            else json.loads(Path(blueprint_arg).read_text(encoding="utf-8"))
+        # RQ2 hardening (2026-11-03, first real-LLM run): deepseek-flash
+        # hallucinated {"manifest_ref": "manifest.json"} -> FileNotFoundError.
+        # The orchestrator owns the pipeline state, so the server pins every
+        # state-carrying argument: whatever the model emits is recorded into
+        # report.llm_arg_overrides and overridden -- the LLM decides *that*
+        # rendering happens, never *what* gets rendered.
+        overrides = state.setdefault("llm_arg_overrides", [])
+        for key in ("manifest_ref", "manifest", "blueprint_ref", "blueprint"):
+            if key in args:
+                overrides.append({"task": "engineer_render", "arg": key,
+                                  "provided": args[key],
+                                  "action": "overridden: runner injects canonical "
+                                            "manifest/blueprint state"})
+        if "params" in args:
+            overrides.append({"task": "engineer_render", "arg": "params",
+                              "provided": args["params"],
+                              "action": "overridden: generated_at pinned by the "
+                                        "runner for byte-level determinism"})
+        params = {"generated_at": generated_at}
+        manifest = state["manifest"]
+        blueprint = state["blueprint"]
         try:
             result = K8sRenderTool().run(manifest, blueprint, params)
         except ValueError as exc:  # render gate / blueprint validation -> interception
@@ -621,6 +634,15 @@ def _run_task(task, state, llm_client, generated_at, run_kubeconform) -> None:
         if call.get("tool") != "kube_validate_tool":
             raise PipelineError(
                 f"validator_checks must call kube_validate_tool, got {call.get('tool')!r}")
+        args = call.get("args") or {}
+        if args:
+            # same server-side pinning as engineer_render: the validator gets
+            # final files/manifest/blueprint from the orchestrator state
+            overrides = state.setdefault("llm_arg_overrides", [])
+            overrides.append({"task": "validator_checks", "arg": "args",
+                              "provided": args,
+                              "action": "overridden: runner injects rendered files, "
+                                        "manifest and blueprint"})
         state["validation"] = KubeValidateTool().run(
             files=state["files"],
             manifest=state["manifest"],
