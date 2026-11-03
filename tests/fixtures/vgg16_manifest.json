@@ -1,33 +1,15 @@
 {
   "model_key": "vgg16",
-  "slices_count": 2,
+  "slices_count": 4,
   "total_layers": 39,
   "max_tensor_diff": 0.0,
   "slices": [
     {
       "slice_id": 0,
       "name": "vgg16_slice_0",
-      "layers_count": 1,
+      "layers_count": 24,
       "layers": [
-        "features.0"
-      ],
-      "steps_count": 3,
-      "alloc_mb": 128.0,
-      "footprint_mb": 0.01,
-      "inbound_peers": [],
-      "outbound_peers": [
-        1
-      ],
-      "trigger_type": "api_gateway",
-      "method": "POST",
-      "path": "/predict",
-      "type": "orchestrator"
-    },
-    {
-      "slice_id": 1,
-      "name": "vgg16_slice_1",
-      "layers_count": 38,
-      "layers": [
+        "features.0",
         "features.1",
         "features.2",
         "features.3",
@@ -50,16 +32,74 @@
         "features.20",
         "features.21",
         "features.22",
-        "features.23",
+        "features.23"
+      ],
+      "steps_count": 49,
+      "alloc_mb": 128.0,
+      "footprint_mb": 41.38,
+      "inbound_peers": [],
+      "outbound_peers": [
+        1
+      ],
+      "trigger_type": "api_gateway",
+      "method": "POST",
+      "path": "/predict",
+      "type": "orchestrator"
+    },
+    {
+      "slice_id": 1,
+      "name": "vgg16_slice_1",
+      "layers_count": 7,
+      "layers": [
         "features.24",
         "features.25",
         "features.26",
         "features.27",
         "features.28",
         "features.29",
-        "features.30",
+        "features.30"
+      ],
+      "steps_count": 14,
+      "alloc_mb": 128.0,
+      "footprint_mb": 27.39,
+      "inbound_peers": [
+        0
+      ],
+      "outbound_peers": [
+        2
+      ],
+      "trigger_type": "event",
+      "method": null,
+      "path": null,
+      "type": "worker"
+    },
+    {
+      "slice_id": 2,
+      "name": "vgg16_slice_2",
+      "layers_count": 2,
+      "layers": [
         "avgpool",
-        "classifier.0",
+        "classifier.0"
+      ],
+      "steps_count": 5,
+      "alloc_mb": 448.0,
+      "footprint_mb": 392.11,
+      "inbound_peers": [
+        1
+      ],
+      "outbound_peers": [
+        3
+      ],
+      "trigger_type": "event",
+      "method": null,
+      "path": null,
+      "type": "worker"
+    },
+    {
+      "slice_id": 3,
+      "name": "vgg16_slice_3",
+      "layers_count": 6,
+      "layers": [
         "classifier.1",
         "classifier.2",
         "classifier.3",
@@ -67,11 +107,11 @@
         "classifier.5",
         "classifier.6"
       ],
-      "steps_count": 78,
-      "alloc_mb": 576.0,
-      "footprint_mb": 527.79,
+      "steps_count": 13,
+      "alloc_mb": 128.0,
+      "footprint_mb": 79.66,
       "inbound_peers": [
-        0
+        2
       ],
       "outbound_peers": [],
       "trigger_type": "event",
@@ -82,9 +122,7 @@
   ],
   "expanded_parts": [
     [
-      "features.0"
-    ],
-    [
+      "features.0",
       "features.1",
       "features.2",
       "features.3",
@@ -107,16 +145,22 @@
       "features.20",
       "features.21",
       "features.22",
-      "features.23",
+      "features.23"
+    ],
+    [
       "features.24",
       "features.25",
       "features.26",
       "features.27",
       "features.28",
       "features.29",
-      "features.30",
+      "features.30"
+    ],
+    [
       "avgpool",
-      "classifier.0",
+      "classifier.0"
+    ],
+    [
       "classifier.1",
       "classifier.2",
       "classifier.3",
@@ -127,7 +171,7 @@
   ],
   "stats": {
     "rounds": 2,
-    "nodes_folded": 37,
+    "nodes_folded": 31,
     "edges_merged": 0
   },
   "plan_source": "dp_solve"
