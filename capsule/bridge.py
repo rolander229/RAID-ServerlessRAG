@@ -49,7 +49,7 @@ class SliceCapsuleBridge:
         self.timing = TimingModel()
 
     def partition_model(
-        self, model_key: str = "resnet50", slices_count: int = 3, device: str = "cpu"
+        self, model_key: str = "resnet50", slices_count: int = 3, device: str = "cpu", mb_per_vcpu: float | None = None, batch: int | None = None
     ) -> Dict[str, Any]:
         """Phase 1: Run MOPAR recording & vertical partitioning to generate optimal slice plan."""
         logger.info(">>> [Phase 1/4] Running MOPAR partitioning on model: %s (slices=%d)", model_key, slices_count)
@@ -93,8 +93,30 @@ class SliceCapsuleBridge:
                 "plan_source": "hardcoded"
             }
 
-        model, inputs = zoo.load(model_key, device=device)
+        model, inputs = (zoo.load(model_key, device=device, batch=batch) if batch else zoo.load(model_key, device=device))
         prog = record(model, inputs, name=model_key)
+        try:
+            from slicer.models.graphify import build_structure_graph
+            from slicer.profile.service import profile_model
+            _sg = build_structure_graph(model, inputs, name=model_key, device=device)
+            _pf = profile_model(model, inputs, key=model_key, device=device, graph=_sg)
+            _n = 0
+            for _ly in _pf.graph:
+                try:
+                    _node = prog.graph.layer(_ly.name)
+                except Exception:
+                    continue
+                for _a in ("memory", "time", "seconds"):
+                    if hasattr(_ly, _a):
+                        setattr(_node, _a, getattr(_ly, _a))
+                _n += 1
+            if _n == 0:
+                raise RuntimeError("no layer names aligned between record graph and structure graph")
+            if mb_per_vcpu is not None:
+                self.platform = PlatformConfig(mb_per_vcpu=mb_per_vcpu)
+            logger.info("[bridge] profiled %d layers: activation memory injected", _n)
+        except Exception as _e:
+            logger.warning("[bridge] profiling unavailable (%s); fallback to unprofiled graph", _e)
         
         # HyPAD DP partitioning
         groups, simplified_graph, stats = vertical_partition(
