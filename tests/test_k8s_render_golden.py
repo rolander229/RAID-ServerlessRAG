@@ -213,6 +213,11 @@ class K8sRenderGoldenTest(unittest.TestCase):
         self.assertFalse(any(v["name"] == "activations" for v in spec["volumes"]))
         self.assertFalse(any(m["name"] == "activations" for m in spec["containers"][0]["volumeMounts"]))
 
+    def test_meta_load_flag_in_args(self):
+        files = render(load_fixture(), RenderParams(image="img:1", generated_at="T", meta_load=True))
+        c = deployment_of(files, "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]["containers"][0]
+        self.assertIn("--meta-load", c["args"])
+
     def test_requests_cpu_override_and_mem_limit(self):
         p = RenderParams(image="img:1", generated_at="T", requests_cpu="100m", mem_limit_mi=3072)
         res = resources_of(render(load_fixture(), p), "30-resnet50-slice-0.yaml")

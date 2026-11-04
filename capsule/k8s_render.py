@@ -119,6 +119,8 @@ class RenderParams:
     weights_host_path: str = ""
     weights_mount: str = "/models"
     activations_mode: str = "pvc"
+    # C2: slice_server --meta-load (shard-first, no full-checkpoint instantiation)
+    meta_load: bool = False
 
 
 def _warn(msg: str) -> None:
@@ -336,7 +338,10 @@ def _deployment_doc(s: Dict[str, Any], params: RenderParams, model: str, name_by
     if params.container_command:
         container["command"] = list(params.container_command)
     if params.slice_args:
-        container["args"] = _slice_args(s, params, model_key, name_by_id)
+        args = _slice_args(s, params, model_key, name_by_id)
+        if params.meta_load:
+            args.append("--meta-load")
+        container["args"] = args
 
     pod_spec: Dict[str, Any] = {
         "containers": [container],
@@ -607,6 +612,7 @@ def main(argv: List[str] = None) -> int:
     parser.add_argument("--weights-mount", default="/models", help="container mount path for weights")
     parser.add_argument("--activations-mode", default="pvc", choices=["pvc", "omit"])
     parser.add_argument("--no-plan-configmap", action="store_true", help="do not emit/mount the plan ConfigMap")
+    parser.add_argument("--meta-load", action="store_true", help="slice_server --meta-load (C2 shard-first)")
     args = parser.parse_args(argv)
 
     node_selector = None
@@ -647,6 +653,7 @@ def main(argv: List[str] = None) -> int:
         weights_mount=args.weights_mount,
         activations_mode=args.activations_mode,
         plan_configmap=not args.no_plan_configmap,
+        meta_load=args.meta_load,
     )
     try:
         files = render(manifest, params)
