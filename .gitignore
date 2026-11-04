@@ -37,3 +37,4 @@ docs/
 issues/
 bin/kubeconform
 wheelhouse/
+slicer-*/
