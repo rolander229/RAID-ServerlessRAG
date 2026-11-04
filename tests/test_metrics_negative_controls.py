@@ -41,7 +41,10 @@ from slicer.models import zoo  # noqa: E402
 from slicer.models.weight_shard import expand_parts  # noqa: E402
 from slicer.faas.program import record  # noqa: E402
 
-MEM_METER_JSON = Path(__file__).resolve().parents[1] / "runs" / "mem_meter_resnet50_k3.json"
+# 权威产物优先用提交的 fixture（runs/ 是工作区残留，Mac 上曾有 0.0 比率的脏文件遮蔽它）
+MEM_METER_JSON = Path(__file__).resolve().parent / "fixtures" / "mem_meter_resnet50_k3.json"
+if not MEM_METER_JSON.is_file():
+    MEM_METER_JSON = Path(__file__).resolve().parents[1] / "runs" / "mem_meter_resnet50_k3.json"
 
 
 def _misplace_one_layer(parts: list[list[str]]) -> list[list[str]]:
@@ -131,7 +134,7 @@ class TestNegativeControlHalvedAlloc(unittest.TestCase):
         self.assertTrue(self.metering["d2_pass_net"], "原始产物本身应当通过 D2（净增量口径）")
 
     def test_cost_meter_prices_the_halved_artifact_at_half(self):
-        logs = str(MEM_METER_JSON.parents[1] / "runs" / "slice_server_logs" / "resnet50_slice*.jsonl")
+        logs = str(MEM_METER_JSON.parent / "slice_server_logs" / "resnet50_slice*.jsonl")
         rows = read_slice_logs(logs)
         self.assertTrue(rows, "A4 日志应已存在（阶段 A 产物）")
         original = build_report(logs, str(MEM_METER_JSON))["summary"]["usd_per_request_total"]

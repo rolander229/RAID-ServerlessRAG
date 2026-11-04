@@ -1,0 +1,3 @@
+{"slice_id": 2, "request_id": "curl-a3-001", "hop": 2, "moved_in_mb": 0.384, "hop_ms": 8.241, "busy_ms": 3.401, "moved_mb": 0.005, "rss_mb": 666.2, "status": "ok", "ts": "2026-11-02T01:48:35+0000"}
+{"slice_id": 2, "request_id": "probe-98aa2f86", "hop": 2, "moved_in_mb": 0.384, "hop_ms": 8.11, "busy_ms": 2.696, "moved_mb": 0.005, "rss_mb": 666.2, "status": "ok", "ts": "2026-11-02T01:48:54+0000"}
+{"slice_id": 2, "request_id": "probe-6806dbc2", "hop": 2, "moved_in_mb": 6.126, "hop_ms": 23.626, "busy_ms": 5.096, "moved_mb": 0.062, "rss_mb": 666.2, "status": "ok", "ts": "2026-11-02T01:49:16+0000"}

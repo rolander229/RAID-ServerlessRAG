@@ -60,7 +60,7 @@ class TestGoldenPipeline(unittest.TestCase):
         manifests = sorted((self.out / "manifests").glob("*.yaml"))
         self.assertEqual([p.name for p in adapters],
                          ["slice_0_adapter.py", "slice_1_adapter.py", "slice_2_adapter.py"])
-        self.assertEqual(len(manifests), 8)
+        self.assertEqual(len(manifests), 9)
         self.assertIn("40-ingress.yaml", [p.name for p in manifests])
 
     def test_manifests_are_valid_yaml_and_validate_clean(self):

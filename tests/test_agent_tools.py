@@ -49,7 +49,7 @@ def codes(findings):
 class TestRenderTool(unittest.TestCase):
     def test_renders_expected_inventory(self):
         out = render_fixture()
-        self.assertEqual(out["summary"]["file_count"], 8)
+        self.assertEqual(out["summary"]["file_count"], 9)
         self.assertIn("40-ingress.yaml", out["files"])
         self.assertIn("50-difftest-job.yaml", out["files"])
         self.assertEqual(len(out["summary"]["per_slice"]), 3)
@@ -111,7 +111,7 @@ class TestValidateCleanRender(unittest.TestCase):
         self.assertTrue(self.result["ok"],
                         msg=f"unexpected findings: {self.result['findings']}")
         self.assertEqual(self.result["error_count"], 0)
-        self.assertEqual(self.result["checked"]["docs"], 11)
+        self.assertEqual(self.result["checked"]["docs"], 12)
 
     def test_kubeconform_best_effort_never_crashes(self):
         self.assertIn(self.result["kubeconform"]["status"],
@@ -123,7 +123,7 @@ class TestValidateCleanRender(unittest.TestCase):
         self.assertEqual(kinds.get("Service"), 3)
         self.assertEqual(kinds.get("Ingress"), 1)
         self.assertEqual(kinds.get("PersistentVolumeClaim"), 2)
-        self.assertEqual(kinds.get("ConfigMap"), 1)
+        self.assertEqual(kinds.get("ConfigMap"), 2)
         self.assertEqual(kinds.get("Job"), 1)
 
 

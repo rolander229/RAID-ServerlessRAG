@@ -156,6 +156,69 @@ class K8sRenderGoldenTest(unittest.TestCase):
         self.assertEqual(meta["plan_source"], "hardcoded")
         self.assertEqual(meta["gpu"], "reserved")
 
+    # -- deployability knobs (B2-B10) ----------------------------------------
+
+    def test_command_args_bind_chain(self):
+        files = render(load_fixture(), PARAMS)
+        for n, fname in enumerate(["30-resnet50-slice-0.yaml", "30-resnet50-slice-1.yaml", "30-resnet50-slice-2.yaml"]):
+            c = deployment_of(files, fname)["spec"]["template"]["spec"]["containers"][0]
+            self.assertEqual(c["command"], ["python", "-m", "capsule.slice_server"])
+            self.assertIn("--bind", c["args"])
+            self.assertEqual(c["args"][c["args"].index("--bind") + 1], "0.0.0.0")
+            self.assertEqual(c["args"][c["args"].index("--slice") + 1], str(n))
+            self.assertEqual(c["args"][c["args"].index("--plan") + 1], "/app/plan/resnet50_manifest.json")
+            self.assertEqual(c["args"][c["args"].index("--weights-dir") + 1], "/models/resnet50")
+        # slice-0 forwards to slice-1; slice-2 has no --next-peer
+        c0 = deployment_of(files, "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(c0["args"][c0["args"].index("--next-peer") + 1],
+                         "http://resnet50-slice-1.mopar-dev.svc:8080/invoke")
+        c2 = deployment_of(files, "30-resnet50-slice-2.yaml")["spec"]["template"]["spec"]["containers"][0]
+        self.assertNotIn("--next-peer", c2["args"])
+
+    def test_torch_home_env(self):
+        files = render(load_fixture(), PARAMS)
+        self.assertEqual(env_of(files, "30-resnet50-slice-0.yaml")["TORCH_HOME"], "/models")
+
+    def test_plan_configmap_and_mount(self):
+        files = render(load_fixture(), PARAMS)
+        self.assertIn("21-plan-configmap.yaml", files)
+        cm = docs_of(files["21-plan-configmap.yaml"])[0]
+        self.assertEqual(cm["kind"], "ConfigMap")
+        self.assertIn("resnet50_manifest.json", cm["data"])
+        spec = deployment_of(files, "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]
+        plan_mounts = [m for m in spec["containers"][0]["volumeMounts"] if m["name"] == "plan"]
+        self.assertEqual(plan_mounts[0]["mountPath"], "/app/plan")
+        self.assertTrue(any("configMap" in v and v["name"] == "plan" for v in spec["volumes"]))
+
+    def test_no_plan_configmap(self):
+        files = render(load_fixture(), RenderParams(image="img:1", generated_at="T", plan_configmap=False))
+        self.assertNotIn("21-plan-configmap.yaml", files)
+        spec = deployment_of(files, "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]
+        self.assertFalse(any(v["name"] == "plan" for v in spec["volumes"]))
+
+    def test_node_selector_and_pull_policy(self):
+        p = RenderParams(image="img:1", generated_at="T",
+                         node_selector={"kubernetes.io/hostname": "dell-52"},
+                         image_pull_policy="Always")
+        spec = deployment_of(render(load_fixture(), p), "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]
+        self.assertEqual(spec["nodeSelector"], {"kubernetes.io/hostname": "dell-52"})
+        self.assertEqual(spec["containers"][0]["imagePullPolicy"], "Always")
+
+    def test_hostpath_weights_and_omit_activations(self):
+        p = RenderParams(image="img:1", generated_at="T", weights_mode="hostPath",
+                         weights_host_path="/var/mopar/weights", activations_mode="omit")
+        spec = deployment_of(render(load_fixture(), p), "30-resnet50-slice-0.yaml")["spec"]["template"]["spec"]
+        wv = [v for v in spec["volumes"] if v["name"] == "weights"][0]
+        self.assertEqual(wv["hostPath"]["path"], "/var/mopar/weights")
+        self.assertFalse(any(v["name"] == "activations" for v in spec["volumes"]))
+        self.assertFalse(any(m["name"] == "activations" for m in spec["containers"][0]["volumeMounts"]))
+
+    def test_requests_cpu_override_and_mem_limit(self):
+        p = RenderParams(image="img:1", generated_at="T", requests_cpu="100m", mem_limit_mi=3072)
+        res = resources_of(render(load_fixture(), p), "30-resnet50-slice-0.yaml")
+        self.assertEqual(res["requests"]["cpu"], "100m")
+        self.assertEqual(res["limits"]["memory"], "3072Mi")
+
 
 if __name__ == "__main__":
     unittest.main()

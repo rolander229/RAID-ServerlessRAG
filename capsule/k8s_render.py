@@ -49,7 +49,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -90,6 +90,35 @@ class RenderParams:
     diff_tolerance: str = "1e-4"
     gpu_resource: str = "nvidia.com/v100"
     gpu_per_slice: int = 0  # reserved: v0 renders CPU slices only
+
+    # -- k8s-prep B2-B10: deployability knobs --------------------------------
+    # B2: container command/args (K8s `args` REPLACES the image CMD, so the
+    #     command must be explicit or the container dies executing flags).
+    container_command: Tuple[str, ...] = ("python", "-m", "capsule.slice_server")
+    slice_args: bool = True
+    # B3: slice_server must bind 0.0.0.0 (127.0.0.1 is unreachable via Service).
+    bind_addr: str = "0.0.0.0"
+    # B4: pretrained checkpoints live on the weights volume; tell torchvision.
+    torch_home: str = "/models"
+    # Transport mode: "dual" (inline <=2MB / file >2MB) or "inline".
+    transport: str = "dual"
+    # B5: slice plan manifest as a ConfigMap, mounted into every slice pod.
+    plan_configmap: bool = True
+    plan_mount: str = "/app/plan"
+    # B6: pin pods to a node (e.g. {"kubernetes.io/hostname": "dell-52"}).
+    node_selector: Optional[Dict[str, str]] = None
+    # B7: avoid stale cached tags after re-push.
+    image_pull_policy: str = "IfNotPresent"
+    # B8: peak memory override (checkpoint instantiation beats alloc+base).
+    mem_limit_mi: Optional[int] = None
+    # B9: scheduling-cheap requests (e.g. "100m"); defaults to ceil(alloc/lambda).
+    requests_cpu: Optional[str] = None
+    # B10: storage modes -- "pvc" or "hostPath"; activations may be omitted
+    #      entirely when every hop travels inline.
+    weights_mode: str = "pvc"
+    weights_host_path: str = ""
+    weights_mount: str = "/models"
+    activations_mode: str = "pvc"
 
 
 def _warn(msg: str) -> None:
@@ -200,36 +229,122 @@ def _probe(delay: int, period: int) -> Dict[str, Any]:
     }
 
 
-def _slice_volume_sections(params: RenderParams) -> List[Dict[str, Any]]:
-    mounts = [
-        {"name": "shm", "mountPath": "/dev/shm"},
-        {"name": "weights", "mountPath": "/models", "readOnly": True},
-        {"name": "activations", "mountPath": "/activations"},
+def _slice_volume_sections(params: RenderParams) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Volume mounts/volumes for one slice pod (B5/B10 knobs)."""
+    mounts: List[Dict[str, Any]] = [{"name": "shm", "mountPath": "/dev/shm"}]
+    volumes: List[Dict[str, Any]] = [
+        {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": SHM_SIZE_LIMIT}}
     ]
-    volumes = [
-        {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": SHM_SIZE_LIMIT}},
-        {"name": "weights", "persistentVolumeClaim": {"claimName": params.weights_pvc, "readOnly": True}},
-        {"name": "activations", "persistentVolumeClaim": {"claimName": params.activations_pvc}},
-    ]
+
+    if params.weights_mode == "hostPath":
+        volumes.append({"name": "weights", "hostPath": {"path": params.weights_host_path, "type": "DirectoryOrCreate"}})
+    elif params.weights_mode == "pvc":
+        volumes.append({"name": "weights", "persistentVolumeClaim": {"claimName": params.weights_pvc, "readOnly": True}})
+    else:
+        raise ValueError(f"weights_mode must be 'pvc' or 'hostPath', got {params.weights_mode!r}")
+    mounts.append({"name": "weights", "mountPath": params.weights_mount, "readOnly": True})
+
+    if params.activations_mode == "pvc":
+        volumes.append({"name": "activations", "persistentVolumeClaim": {"claimName": params.activations_pvc}})
+        mounts.append({"name": "activations", "mountPath": "/activations"})
+    elif params.activations_mode != "omit":
+        raise ValueError(f"activations_mode must be 'pvc' or 'omit', got {params.activations_mode!r}")
+
+    if params.plan_configmap:
+        volumes.append({"name": "plan", "configMap": {"name": "mopar-plan"}})
+        mounts.append({"name": "plan", "mountPath": params.plan_mount, "readOnly": True})
+
     return mounts, volumes
 
 
-def _deployment_doc(s: Dict[str, Any], params: RenderParams, model: str, name_by_id: Dict[Any, str]) -> Dict[str, Any]:
+def _plan_configmap_doc(manifest: Dict[str, Any], params: RenderParams, model: str) -> Dict[str, Any]:
+    """B5: the authoritative slice plan, mounted into every slice pod."""
+    model_key = str(manifest.get("model_key", "model"))
+    content = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2)
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "mopar-plan",
+            "namespace": params.namespace,
+            "labels": {"mopar.io/model": model},
+        },
+        "data": {f"{model_key}_manifest.json": content},
+    }
+
+
+def _slice_args(s: Dict[str, Any], params: RenderParams, model_key: str, name_by_id: Dict[Any, str]) -> List[str]:
+    """Container args matching capsule/slice_server.py's CLI (B2/B3/B4)."""
+    sid = s["slice_id"]
+    args = [
+        "--model", model_key,
+        "--slice", str(sid),
+        "--port", str(SERVICE_PORT),
+        "--bind", params.bind_addr,
+        "--plan", f"{params.plan_mount}/{model_key}_manifest.json",
+        "--weights-dir", f"{params.weights_mount}/{model_key}",
+        "--activations-dir", "/tmp/act",
+        "--log-dir", "/tmp/logs",
+        "--device", "cpu",
+    ]
+    peers = s.get("outbound_peers") or []
+    if peers:
+        target = name_by_id[peers[0]]
+        args += ["--next-peer", f"http://{target}.{params.namespace}.svc:{SERVICE_PORT}/invoke"]
+    return args
+
+
+def _deployment_doc(s: Dict[str, Any], params: RenderParams, model: str, name_by_id: Dict[Any, str],
+                    model_key: str) -> Dict[str, Any]:
     sid = s["slice_id"]
     dep_name = name_by_id[sid]
     role = s.get("type") or ("orchestrator" if sid == 0 else "worker")
     alloc = float(s["alloc_mb"])
     footprint = float(s["footprint_mb"])
 
-    limit_mi = math.ceil((alloc + params.torch_base_mi) * params.headroom)
+    limit_mi = params.mem_limit_mi or math.ceil((alloc + params.torch_base_mi) * params.headroom)
     request_mi = math.ceil(footprint)
-    cpu_m = math.ceil(alloc / params.lambda_mb_per_vcpu)
+    cpu_value = params.requests_cpu if params.requests_cpu is not None else math.ceil(alloc / params.lambda_mb_per_vcpu)
 
     peers = s.get("outbound_peers") or []
     out_peers = ",".join(f"{name_by_id[p]}.{params.namespace}.svc:{SERVICE_PORT}" for p in peers)
 
+    env = [
+        {"name": "MOPAR_SLICE_ID", "value": str(sid)},
+        {"name": "MOPAR_OUT_PEERS", "value": out_peers},
+        {"name": "MOPAR_TRANSPORT", "value": params.transport},
+    ]
+    if params.torch_home:
+        env.append({"name": "TORCH_HOME", "value": params.torch_home})
+
     mounts, volumes = _slice_volume_sections(params)
     labels = _labels(model, sid=sid, role=role, alloc_mb=alloc)
+    container: Dict[str, Any] = {
+        "name": "slice",
+        "image": params.image,
+        "imagePullPolicy": params.image_pull_policy,
+        "ports": [{"name": "http", "containerPort": SERVICE_PORT}],
+        "env": env,
+        "resources": {
+            "requests": {"cpu": cpu_value, "memory": f"{request_mi}Mi"},
+            "limits": {"memory": f"{limit_mi}Mi"},
+        },
+        "volumeMounts": mounts,
+        "readinessProbe": _probe(5, 10),
+        "livenessProbe": _probe(15, 20),
+    }
+    if params.container_command:
+        container["command"] = list(params.container_command)
+    if params.slice_args:
+        container["args"] = _slice_args(s, params, model_key, name_by_id)
+
+    pod_spec: Dict[str, Any] = {
+        "containers": [container],
+        "volumes": volumes,
+    }
+    if params.node_selector:
+        pod_spec["nodeSelector"] = dict(params.node_selector)
+
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -244,28 +359,7 @@ def _deployment_doc(s: Dict[str, Any], params: RenderParams, model: str, name_by
             "selector": {"matchLabels": {"mopar.io/model": model, "mopar.io/slice-id": str(sid)}},
             "template": {
                 "metadata": {"labels": dict(labels)},
-                "spec": {
-                    "containers": [
-                        {
-                            "name": "slice",
-                            "image": params.image,
-                            "ports": [{"name": "http", "containerPort": SERVICE_PORT}],
-                            "env": [
-                                {"name": "MOPAR_SLICE_ID", "value": str(sid)},
-                                {"name": "MOPAR_OUT_PEERS", "value": out_peers},
-                                {"name": "MOPAR_TRANSPORT", "value": "dual"},
-                            ],
-                            "resources": {
-                                "requests": {"cpu": cpu_m, "memory": f"{request_mi}Mi"},
-                                "limits": {"memory": f"{limit_mi}Mi"},
-                            },
-                            "volumeMounts": mounts,
-                            "readinessProbe": _probe(5, 10),
-                            "livenessProbe": _probe(15, 20),
-                        }
-                    ],
-                    "volumes": volumes,
-                },
+                "spec": pod_spec,
             },
         },
     }
@@ -419,19 +513,23 @@ def render(manifest: Dict[str, Any], params: RenderParams) -> Dict[str, str]:
 
     files: Dict[str, str] = {}
 
-    files["10-pvc-activations.yaml"] = _dump(
-        [_pvc_doc(params.activations_pvc, "ReadWriteMany", params.activations_size, "activations", params, model)]
-    )
-    files["11-pvc-weights.yaml"] = _dump(
-        [_pvc_doc(params.weights_pvc, "ReadOnlyMany", params.weights_size, "weights", params, model)]
-    )
+    if params.activations_mode == "pvc":
+        files["10-pvc-activations.yaml"] = _dump(
+            [_pvc_doc(params.activations_pvc, "ReadWriteMany", params.activations_size, "activations", params, model)]
+        )
+    if params.weights_mode == "pvc":
+        files["11-pvc-weights.yaml"] = _dump(
+            [_pvc_doc(params.weights_pvc, "ReadOnlyMany", params.weights_size, "weights", params, model)]
+        )
     files["20-plan-meta-configmap.yaml"] = _dump([_plan_meta_doc(manifest, params, model, plan_source, gpu_meta)])
+    if params.plan_configmap:
+        files["21-plan-configmap.yaml"] = _dump([_plan_configmap_doc(manifest, params, model)])
 
     for s in slices:
         dep_name = name_by_id[s["slice_id"]]
         files[f"30-{dep_name}.yaml"] = _dump(
             [
-                _deployment_doc(s, params, model, name_by_id),
+                _deployment_doc(s, params, model, name_by_id, model_key),
                 _service_doc(s, params, model, name_by_id),
             ]
         )
@@ -496,7 +594,30 @@ def main(argv: List[str] = None) -> int:
     parser.add_argument("--diff-samples", type=int, default=100, help="differential test input count N")
     parser.add_argument("--diff-tolerance", default="1e-4", help="differential test max-tensor-diff acceptance")
     parser.add_argument("--generated-at", default="", help="ISO-8601 UTC stamp; defaults to wall clock now")
+    # -- deployability knobs (B2-B10) ----------------------------------------
+    parser.add_argument("--node-selector", default="", help='pin pods, e.g. "kubernetes.io/hostname=dell-52"')
+    parser.add_argument("--image-pull-policy", default="IfNotPresent", choices=["Always", "IfNotPresent", "Never"])
+    parser.add_argument("--requests-cpu", default="", help='override requests.cpu, e.g. "100m" (default: ceil(alloc/lambda))')
+    parser.add_argument("--mem-limit-mi", type=int, default=0, help="override limits.memory in Mi (0 = formula)")
+    parser.add_argument("--bind", default="0.0.0.0", help="slice_server --bind address")
+    parser.add_argument("--transport", default="dual", choices=["dual", "inline"])
+    parser.add_argument("--torch-home", default="/models", help="TORCH_HOME for checkpoint lookup (empty = unset)")
+    parser.add_argument("--weights-mode", default="pvc", choices=["pvc", "hostPath"])
+    parser.add_argument("--weights-host-path", default="", help="hostPath directory when --weights-mode hostPath")
+    parser.add_argument("--weights-mount", default="/models", help="container mount path for weights")
+    parser.add_argument("--activations-mode", default="pvc", choices=["pvc", "omit"])
+    parser.add_argument("--no-plan-configmap", action="store_true", help="do not emit/mount the plan ConfigMap")
     args = parser.parse_args(argv)
+
+    node_selector = None
+    if args.node_selector.strip():
+        node_selector = {}
+        for pair in args.node_selector.split(","):
+            key, _, value = pair.partition("=")
+            if not key or not value:
+                print(f"[k8s_render] bad --node-selector pair: {pair!r}", file=sys.stderr)
+                return 2
+            node_selector[key.strip()] = value.strip()
 
     generated_at = args.generated_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
@@ -514,6 +635,18 @@ def main(argv: List[str] = None) -> int:
         diff_image=args.diff_image,
         diff_samples=args.diff_samples,
         diff_tolerance=args.diff_tolerance,
+        node_selector=node_selector,
+        image_pull_policy=args.image_pull_policy,
+        requests_cpu=(args.requests_cpu or None),
+        mem_limit_mi=(args.mem_limit_mi or None),
+        bind_addr=args.bind,
+        transport=args.transport,
+        torch_home=args.torch_home,
+        weights_mode=args.weights_mode,
+        weights_host_path=args.weights_host_path,
+        weights_mount=args.weights_mount,
+        activations_mode=args.activations_mode,
+        plan_configmap=not args.no_plan_configmap,
     )
     try:
         files = render(manifest, params)

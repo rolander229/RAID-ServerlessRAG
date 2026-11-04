@@ -18,6 +18,12 @@ import os
 import sys
 import time
 import unittest
+
+import platform
+
+_LINUX_ONLY = unittest.skipUnless(platform.system() == "Linux",
+    "bare-metal runtime needs Linux APIs (sched_getaffinity, /proc)")
+
 from pathlib import Path
 
 import torch
@@ -37,6 +43,7 @@ def _close(*services):
             service.close()
 
 
+@_LINUX_ONLY
 class TestSplitExecution(unittest.TestCase):
     """The premise: a plan run as functions computes what the model computes."""
 
@@ -143,6 +150,7 @@ class TestSplitExecution(unittest.TestCase):
             _close(service)
 
 
+@_LINUX_ONLY
 class TestKnobs(unittest.TestCase):
     """eta -> cores, alloc -> limit: the two knobs the plan is billed on."""
 
@@ -193,6 +201,7 @@ class TestKnobs(unittest.TestCase):
             _close(service)
 
 
+@_LINUX_ONLY
 class TestCampaign(unittest.TestCase):
     """The closed loop Fig. 10b's percentile is taken from."""
 

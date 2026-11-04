@@ -1,0 +1,101 @@
+{
+  "model_key": "resnet50",
+  "slices": 3,
+  "n_iters": 6,
+  "seed": 0,
+  "device": "cpu",
+  "sample_hz": 10.0,
+  "per_slice": [
+    {
+      "slice_id": 0,
+      "layers": 137,
+      "steps": 335,
+      "freed_mb": 41.91046905517578,
+      "resident_mb": 526.75390625,
+      "boot_peak_mb": 668.140625,
+      "serving_rss_samples": [
+        529.00390625,
+        575.046875,
+        578.984375,
+        579.9296875,
+        579.9453125,
+        579.9140625,
+        579.8828125
+      ],
+      "serving_peak_mb": 580.0,
+      "active_s_total": 0.3397260569036007,
+      "active_s_mean": 0.056621,
+      "sampled_peak_mb": 579.9453125,
+      "samples": 36,
+      "alloc_mb": 128.0,
+      "base_mb_after_trim": 526.8,
+      "net_peak_mb": 53.2,
+      "ratio_process_peak_over_alloc": 4.531,
+      "ratio_net_peak_over_alloc": 0.416
+    },
+    {
+      "slice_id": 1,
+      "layers": 19,
+      "steps": 47,
+      "freed_mb": 63.60163116455078,
+      "resident_mb": 505.671875,
+      "boot_peak_mb": 668.37109375,
+      "serving_rss_samples": [
+        507.3828125,
+        522.44921875,
+        522.578125,
+        522.515625
+      ],
+      "serving_peak_mb": 522.7,
+      "active_s_total": 0.0667982017621398,
+      "active_s_mean": 0.011133,
+      "sampled_peak_mb": 522.578125,
+      "samples": 33,
+      "alloc_mb": 128.0,
+      "base_mb_after_trim": 505.7,
+      "net_peak_mb": 17.0,
+      "ratio_process_peak_over_alloc": 4.084,
+      "ratio_net_peak_over_alloc": 0.133
+    },
+    {
+      "slice_id": 2,
+      "layers": 2,
+      "steps": 6,
+      "freed_mb": 89.87906646728516,
+      "resident_mb": 478.98828125,
+      "boot_peak_mb": 667.76171875,
+      "serving_rss_samples": [
+        479.35546875,
+        479.35546875,
+        479.35546875,
+        479.35546875
+      ],
+      "serving_peak_mb": 479.4,
+      "active_s_total": 0.004206460900604725,
+      "active_s_mean": 0.000701,
+      "sampled_peak_mb": 479.35546875,
+      "samples": 34,
+      "alloc_mb": 128.0,
+      "base_mb_after_trim": 479.0,
+      "net_peak_mb": 0.4,
+      "ratio_process_peak_over_alloc": 3.745,
+      "ratio_net_peak_over_alloc": 0.003
+    }
+  ],
+  "monolith": {
+    "serving_peak_mb": 671.7,
+    "net_peak_mb": 102.6,
+    "base_mb_after_trim": 569.1,
+    "alloc_mb": 128.0,
+    "active_s_mean": 0.086789
+  },
+  "aggregate_process_peak_mb": 1582.1,
+  "aggregate_net_peak_mb": 70.6,
+  "peak_reduction_ratio_process": -1.3553,
+  "peak_reduction_ratio_net": 0.3117,
+  "mc_sliced_mb_s": 8.762,
+  "mc_monolith_mb_s": 11.109,
+  "mc_reduction_percent": 21.12,
+  "d2_pass_net": true,
+  "d2_pass_process": false
+}
