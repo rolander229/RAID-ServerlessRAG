@@ -35,6 +35,7 @@
 
 **测试要求**：每项修改都要更新 `tests/golden/resnet50_k3.yaml` + 单测断言；新增 vgg16 golden。
 
+> 2026-11-04 状态（C2 已完成）：`--meta-load` 使每片 Pod 峰值 1470MB→765MB（-48%），链输出 max-diff=0.0；`--mem-limit-mi 1024` 可用。
 > 2026-11-04 状态：B2-B7/B9/B10 已实现（`--node-selector`/`--image-pull-policy`/`--requests-cpu`/`--mem-limit-mi`/`--bind`/`--transport`/`--torch-home`/`--weights-mode`/`--weights-host-path`/`--weights-mount`/`--activations-mode`/`--no-plan-configmap`），13 项渲染测试 + 全量 248 测试通过（34 项 Linux 专属跳过）。B8 提供 `--mem-limit-mi` 覆盖（根治仍是 C2 shard-first）。
 
 ## C. 运行时 capsule/slice_server.py（3 项）
@@ -42,8 +43,8 @@
 | # | 问题 | 修复 |
 |---|------|------|
 | C1 | 默认绑定 127.0.0.1 | `--bind` 默认改 `0.0.0.0`（K8s 场景）；本地测试传 `127.0.0.1` |
-| C2 | `zoo.load` 实例化加载全量 checkpoint（528MB+底座 → 峰值 1312MB） | **shard-first 加载**：`zoo.load(weights=None)` 随机实例化 → `weight_shard.load_shard` 回填本片 → 峰值降至 ~600MB；需处理 tied-weights（Qwen）与 buffer |
-| C3 | checkpoint 需随卷提供 | 部署文档/脚本明确：`/models/hub/checkpoints/` 放原始 checkpoint（或 C2 后不再需要） |
+| C2 ✅ | `zoo.load` 实例化加载全量 checkpoint（528MB+底座 → 峰值 1312MB） | **shard-first 加载**：`zoo.load(weights=None)` 随机实例化 → `weight_shard.load_shard` 回填本片 → 峰值降至 ~600MB；需处理 tied-weights（Qwen）与 buffer |
+| C3 ✅ | checkpoint 需随卷提供 | 部署文档/脚本明确：`/models/hub/checkpoints/` 放原始 checkpoint（或 C2 后不再需要） |
 
 ## D. 集群环境（4 项，环境固有，做替代方案）
 
