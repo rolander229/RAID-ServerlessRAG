@@ -181,7 +181,7 @@ def get(key: str) -> ModelSpec:
 
 
 def load(key: str, device: str = "cpu", dtype=None,
-         batch: int | None = None, seed: int = 0):
+         batch: int | None = None, seed: int = 0, init: str | None = None):
     """Build a service plus one representative request.
 
     ``batch`` is overridden by the profiler when it sweeps input sizes; every
@@ -194,6 +194,15 @@ def load(key: str, device: str = "cpu", dtype=None,
     spec = get(key)
     random.seed(seed)
     torch.manual_seed(seed)
+    if init == "meta":
+        # C2 shard-first: build the architecture without materialising weights.
+        # The forward still traces on meta (shapes only); the serving runtime
+        # then fills only the slice's parameters from its shard file.
+        with torch.device("meta"):
+            model = spec.build()
+            model.eval()
+        inputs = spec.inputs(spec.batch if batch is None else batch)
+        return model, move_tensors(inputs, "meta", dtype)
     model = spec.build()
     model.eval()
     if dtype is not None:

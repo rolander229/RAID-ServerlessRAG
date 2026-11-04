@@ -59,7 +59,7 @@ if str(REPO_ROOT) not in sys.path:
 from slicer.models import zoo  # noqa: E402
 from slicer.models.graphify import _iter_tensors, move_tensors  # noqa: E402
 from slicer.faas.program import _fill, record  # noqa: E402
-from slicer.models.weight_shard import expand_parts, load_shard  # noqa: E402
+from slicer.models.weight_shard import expand_parts, load_shard, patch_step_tensors  # noqa: E402
 
 MB = 2 ** 20
 INLINE_LIMIT = 2 * MB          # the dual-track threshold: base64 below, file above
@@ -120,8 +120,13 @@ class _SliceState:
 
     def __init__(self, args) -> None:
         self.args = args
-        model, inputs = zoo.load(args.model, device=args.device,
-                                 batch=args.batch, seed=args.seed)
+        if args.meta_load:
+            # C2 shard-first: 0-byte architecture, weights only from the shard.
+            model, inputs = zoo.load(args.model, device=args.device,
+                                     batch=args.batch, seed=args.seed, init="meta")
+        else:
+            model, inputs = zoo.load(args.model, device=args.device,
+                                     batch=args.batch, seed=args.seed)
         self.model, self.inputs = model, inputs
         self.program = record(model, inputs, name=args.model, device=args.device)
         # The plan comes from the shard manifest when one exists (A1's output is
@@ -161,10 +166,23 @@ class _SliceState:
         shard = weights_dir / ("slice_%d.pt" % args.slice)
         self.shard_tensors = 0
         if shard.is_file():
-            self.shard_tensors = len(load_shard(self.model, shard))
-            print("[slice_server] weights loaded from %s (%d tensors)" % (shard, self.shard_tensors))
+            if args.meta_load:
+                # C2: meta 参数无法 copy_ 灌入，改为表项替换并把 steps 里录下的
+                # meta 权重引用（F.conv2d(input, weight, bias) 的字面量参数）换成真实张量。
+                remap: dict = {}
+                self.shard_tensors = len(load_shard(self.model, shard, remap=remap))
+                patched = patch_step_tensors(self.case.owned, remap)
+                print("[slice_server] weights loaded from %s (%d tensors, %d steps patched)"
+                      % (shard, self.shard_tensors, patched))
+            else:
+                self.shard_tensors = len(load_shard(self.model, shard))
+                print("[slice_server] weights loaded from %s (%d tensors)" % (shard, self.shard_tensors))
         else:
             print("[slice_server] no shard at %s; running on the zoo-built weights" % shard)
+        if args.meta_load:
+            # patch 之后 step 参数里是真实张量的 id，旧的 keeps（meta id）会错杀本片权重；
+            # 必须在清空 steps 之前重算。
+            self.case.keeps = self.program._keeps(self.case.steps)
         self.program.steps = ()
         self.freed_mb = self.program.release(self.case.keeps) / MB
         self.in_keys = tuple(self.case.inbound[0][1]) if self.case.inbound else ()
@@ -376,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--meta-load", action="store_true",
+                        help="C2 shard-first: build the model on meta, materialise only this slice's shard")
     parser.add_argument("--probe", default=None, metavar="ENTRY_URL",
                         help="do not serve: send one request through the chain and diff it")
     args = parser.parse_args(argv)

@@ -35,7 +35,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Any, Iterable
 
 import torch
 
@@ -174,7 +174,8 @@ def export_shards(prog: Program, expanded_parts: Iterable[Iterable[str]],
     return manifest
 
 
-def load_shard(model: torch.nn.Module, path: str | Path) -> list[str]:
+def load_shard(model: torch.nn.Module, path: str | Path,
+               remap: dict[int, torch.Tensor] | None = None) -> list[str]:
     """Fill a model's tables from one shard file; every shard name must exist.
 
     ``copy_`` keeps the loaded values where the recorded steps already point:
@@ -191,9 +192,66 @@ def load_shard(model: torch.nn.Module, path: str | Path) -> list[str]:
         if tuple(target.shape) != tuple(tensor.shape) or target.dtype != tensor.dtype:
             raise ValueError("shard %s: %r shape/dtype mismatch (%s vs %s)"
                              % (path, name, tuple(target.shape), tuple(tensor.shape)))
-        target.data.copy_(tensor.to(target.device))
+        if target.is_meta:
+            # meta 参数（C2 shard-first）无法 copy_ 灌入真实数据（torch 的
+            # no-op），必须替换参数表条目本身。
+            module_name, _, leaf = name.rpartition(".")
+            module = model.get_submodule(module_name) if module_name else model
+            if leaf in module._parameters and module._parameters[leaf] is not None:
+                old = module._parameters[leaf]
+                real = torch.nn.Parameter(tensor.clone(), requires_grad=False)
+                module._parameters[leaf] = real
+                if remap is not None:
+                    remap[id(old)] = real
+            elif leaf in module._buffers and module._buffers[leaf] is not None:
+                old = module._buffers[leaf]
+                real = tensor.clone()
+                module._buffers[leaf] = real
+                if remap is not None:
+                    remap[id(old)] = real
+            else:
+                raise KeyError(name)
+        else:
+            target.data.copy_(tensor.to(target.device))
         loaded.append(name)
     return loaded
+
+
+def _replace_tensors(value: Any, remap: dict[int, torch.Tensor], hits: list[int]) -> Any:
+    """Recursively swap recorded tensors by id (C2: meta weights -> real shards)."""
+    if isinstance(value, torch.Tensor):
+        if id(value) in remap:
+            hits[0] += 1
+            return remap[id(value)]
+        return value
+    if isinstance(value, list):
+        return [_replace_tensors(v, remap, hits) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_tensors(v, remap, hits) for v in value)
+    if isinstance(value, dict):
+        return {k: _replace_tensors(v, remap, hits) for k, v in value.items()}
+    return value
+
+
+def patch_step_tensors(steps: Iterable[Any], remap: dict[int, torch.Tensor]) -> int:
+    """Rewrite every step's args/kwargs, replacing tensors found in ``remap``.
+
+    ``record`` captures a module's weights as literal tensors in the step
+    arguments (e.g. ``F.conv2d(input, weight, bias)``), so a meta-built program
+    holds meta weights there.  After the shard replaces the module tables this
+    rewrites those references to the real tensors.  Returns the number of steps
+    that changed.  Comparisons are identity-based: ``==`` on tensor lists would
+    run ``torch.eq`` and mix meta with real tensors.
+    """
+    changed = 0
+    for step in steps:
+        hits = [0]
+        new_args = _replace_tensors(step.args, remap, hits)
+        new_kwargs = _replace_tensors(step.kwargs, remap, hits)
+        if hits[0]:
+            step.args, step.kwargs = new_args, new_kwargs
+            changed += 1
+    return changed
 
 
 def scrub(model: torch.nn.Module) -> None:

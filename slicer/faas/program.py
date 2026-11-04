@@ -343,8 +343,11 @@ def record(model: torch.nn.Module, inputs: Any, name: str = "",
     other.
     """
     was_training = model.training
-    model.eval().to(device)
-    inputs = move_tensors(inputs, device)
+    model.eval()
+    is_meta = any(isinstance(p, torch.Tensor) and p.is_meta for p in model.parameters())
+    if not is_meta:
+        model.to(device)
+    inputs = move_tensors(inputs, "meta" if is_meta else device)
     capture = _Recorder(OwnerCharge(model), inputs)
     capture.namer = Namer(module_paths(model))
     handles = install_leaf_hooks(model, capture.on_pre, capture.on_post, capture.charge)
