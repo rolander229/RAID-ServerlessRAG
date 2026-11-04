@@ -6,18 +6,16 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# CPU 精简版 torch（避免拉入 CUDA 全家桶；源不可达时可注释改用默认 PyPI）
-RUN pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 \
-    --index-url https://download.pytorch.org/whl/cpu
+# CPU torch：直装官方 wheel URL（绕开 pytorch index 的元数据解析问题）
+RUN pip install --no-cache-dir \
+    https://download.pytorch.org/whl/cpu/torch-2.5.1%2Bcpu-cp310-cp310-linux_x86_64.whl
 
-# 其余依赖（剔除 torch/torchvision/triton，避免覆盖 CPU 版）
+# 其余依赖走默认 PyPI（torchvision 与 +cpu torch 版本兼容；剔除 torch/triton 行）
 COPY requirements.txt .
 RUN grep -vE "^(torch|torchvision|triton)" requirements.txt > /tmp/req.txt \
-    && pip install --no-cache-dir -r /tmp/req.txt
+    && pip install --no-cache-dir torchvision==0.20.1 -r /tmp/req.txt
 
-# 仓库代码（.dockerignore 已排除大文件与敏感内容）
 COPY . .
 
 EXPOSE 8080
-# 实际参数由 K8s Deployment args 传入（--manifest/--slice/--weights/--next-peer）
 CMD ["python", "-m", "capsule.slice_server", "--help"]
