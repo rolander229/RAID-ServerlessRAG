@@ -35,6 +35,8 @@
 
 **测试要求**：每项修改都要更新 `tests/golden/resnet50_k3.yaml` + 单测断言；新增 vgg16 golden。
 
+> 2026-11-04 状态（E 阶段已完成）：`scripts/k8s_e2e.sh` 一条命令完成切分→渲染→清理→部署→探针→采集→成绩单，
+> 集群实测 meta-load 下峰值 785MB、限额 1Gi、探针 max-diff=0.0。
 > 2026-11-04 状态（C2 已完成）：`--meta-load` 使每片 Pod 峰值 1470MB→765MB（-48%），链输出 max-diff=0.0；`--mem-limit-mi 1024` 可用。
 > 2026-11-04 状态：B2-B7/B9/B10 已实现（`--node-selector`/`--image-pull-policy`/`--requests-cpu`/`--mem-limit-mi`/`--bind`/`--transport`/`--torch-home`/`--weights-mode`/`--weights-host-path`/`--weights-mount`/`--activations-mode`/`--no-plan-configmap`），13 项渲染测试 + 全量 248 测试通过（34 项 Linux 专属跳过）。B8 提供 `--mem-limit-mi` 覆盖（根治仍是 C2 shard-first）。
 
@@ -59,11 +61,11 @@
 
 | # | 问题 | 修复 |
 |---|------|------|
-| E1 | 无一键命令 | 写 `scripts/k8s_e2e.sh <model> <slices> <lambda>`：切分→渲染→构建（可选）→apply→rollout→探针→采集→summary |
-| E2 | 部署/验证全手工 | 同上脚本内封装：`kubectl apply`、`rollout status`、`kubectl run` tester、探针、日志采集 |
-| E3 | 探针需独立 tester Pod（slice 容器内跑会 OOM） | 封装成 `--difftest` 模式（Job/Pod），内存 ≥3Gi |
-| E4 | 迭代残留旧 RS/Pod 抢占配额 | 部署脚本先 `kubectl delete deploy/rs/pod -l mopar.io/model=<m> --ignore-not-found` 再 apply |
-| E5 | 手工补丁的 manifests 在仓库外 | 渲染器修好后删除手工目录；部署产物落到 `build/k8s/<model>/`（已 gitignore 或入库策略待定） |
+| E1 ✅ | 无一键命令 | 写 `scripts/k8s_e2e.sh <model> <slices> <lambda>`：切分→渲染→构建（可选）→apply→rollout→探针→采集→summary |
+| E2 ✅ | 部署/验证全手工 | 同上脚本内封装：`kubectl apply`、`rollout status`、`kubectl run` tester、探针、日志采集 |
+| E3 ✅ | 探针需独立 tester Pod（slice 容器内跑会 OOM） | 封装成 `--difftest` 模式（Job/Pod），内存 ≥3Gi |
+| E4 ✅ | 迭代残留旧 RS/Pod 抢占配额 | 部署脚本先 `kubectl delete deploy/rs/pod -l mopar.io/model=<m> --ignore-not-found` 再 apply |
+| E5 ✅ | 手工补丁的 manifests 在仓库外 | 渲染器修好后删除手工目录；部署产物落到 `build/k8s/<model>/`（已 gitignore 或入库策略待定） |
 
 ## 验收标准（Definition of Done）
 
