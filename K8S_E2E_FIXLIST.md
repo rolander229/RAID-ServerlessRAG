@@ -23,17 +23,19 @@
 | # | 问题 | 今晚后果 | 修复 |
 |---|------|----------|------|
 | B1 | CPU 单位 `1m`（毫核） | Pod 仅 0.1% 核 | ✅ 已修（commit 798e91a，golden 同步） |
-| B2 | 不生成 `command` | K8s `args` 替换镜像 CMD → 执行 `--model vgg16…` 秒退 CrashLoop | Deployment 加 `command: ["python","-m","capsule.slice_server"]` |
-| B3 | 不生成 `--bind 0.0.0.0` | 服务绑 127.0.0.1 → Service 拒连、探针失败 | args 加 `--bind 0.0.0.0`（并在 slice_server 改默认值） |
-| B4 | 不生成 `TORCH_HOME` | 容器尝试联网下载 checkpoint → CrashLoop | env 加 `TORCH_HOME=/models`；权重卷必须含 `hub/checkpoints/` |
-| B5 | plan manifest 不进 ConfigMap | 需手工 `kubectl create configmap mopar-plan` + 挂载 | 渲染器生成 `mopar-plan` ConfigMap（from manifest json）+ 挂载 `/app/plan` |
-| B6 | 无 nodeSelector 参数 | 多节点会乱调度 | CLI 加 `--node-selector k=v`，注入 Deployment |
-| B7 | 无 imagePullPolicy 控制 | 同 tag 换镜像后 kubelet 用缓存旧镜像 | CLI 加 `--image-pull-policy Always` |
-| B8 | 限额公式低估实例化峰值 | `(alloc+600)×1.3=947Mi` < vgg16 实测 **1312MB** → OOMKilled | 两条路：a) 改公式计入 checkpoint 峰值；b) **slice_server shard-first 加载**（根治，见 C2），限额定为 `alloc + 运行时底座 + 余量` |
-| B9 | requests.cpu=1 核过胖 | 节点占用 94% 时 4 片排不进 | CLI 加 `--requests-cpu 100m`（默认不变，部署脚本传参） |
-| B10 | 权重卷形态 | ROX PVC 无法绑定 local-path；hostPath 手工切换 | 渲染器支持 `--weights-volume hostPath:/var/mopar/weights` 或 PVC 两种模式 |
+| B2 ✅ | 不生成 `command` | K8s `args` 替换镜像 CMD → 执行 `--model vgg16…` 秒退 CrashLoop | Deployment 加 `command: ["python","-m","capsule.slice_server"]` |
+| B3 ✅ | 不生成 `--bind 0.0.0.0` | 服务绑 127.0.0.1 → Service 拒连、探针失败 | args 加 `--bind 0.0.0.0`（并在 slice_server 改默认值） |
+| B4 ✅ | 不生成 `TORCH_HOME` | 容器尝试联网下载 checkpoint → CrashLoop | env 加 `TORCH_HOME=/models`；权重卷必须含 `hub/checkpoints/` |
+| B5 ✅ | plan manifest 不进 ConfigMap | 需手工 `kubectl create configmap mopar-plan` + 挂载 | 渲染器生成 `mopar-plan` ConfigMap（from manifest json）+ 挂载 `/app/plan` |
+| B6 ✅ | 无 nodeSelector 参数 | 多节点会乱调度 | CLI 加 `--node-selector k=v`，注入 Deployment |
+| B7 ✅ | 无 imagePullPolicy 控制 | 同 tag 换镜像后 kubelet 用缓存旧镜像 | CLI 加 `--image-pull-policy Always` |
+| B8 ⚠️ | 限额公式低估实例化峰值 | `(alloc+600)×1.3=947Mi` < vgg16 实测 **1312MB** → OOMKilled | 两条路：a) 改公式计入 checkpoint 峰值；b) **slice_server shard-first 加载**（根治，见 C2），限额定为 `alloc + 运行时底座 + 余量` |
+| B9 ✅ | requests.cpu=1 核过胖 | 节点占用 94% 时 4 片排不进 | CLI 加 `--requests-cpu 100m`（默认不变，部署脚本传参） |
+| B10 ✅ | 权重卷形态 | ROX PVC 无法绑定 local-path；hostPath 手工切换 | 渲染器支持 `--weights-volume hostPath:/var/mopar/weights` 或 PVC 两种模式 |
 
 **测试要求**：每项修改都要更新 `tests/golden/resnet50_k3.yaml` + 单测断言；新增 vgg16 golden。
+
+> 2026-11-04 状态：B2-B7/B9/B10 已实现（`--node-selector`/`--image-pull-policy`/`--requests-cpu`/`--mem-limit-mi`/`--bind`/`--transport`/`--torch-home`/`--weights-mode`/`--weights-host-path`/`--weights-mount`/`--activations-mode`/`--no-plan-configmap`），13 项渲染测试 + 全量 248 测试通过（34 项 Linux 专属跳过）。B8 提供 `--mem-limit-mi` 覆盖（根治仍是 C2 shard-first）。
 
 ## C. 运行时 capsule/slice_server.py（3 项）
 
