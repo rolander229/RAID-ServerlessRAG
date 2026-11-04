@@ -7,13 +7,14 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # CPU torch：直装官方 wheel URL（绕开 pytorch index 的元数据解析问题）
-RUN pip install --no-cache-dir \
-    https://download.pytorch.org/whl/cpu/torch-2.5.1%2Bcpu-cp310-cp310-linux_x86_64.whl
+RUN pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple
 
-# 其余依赖走默认 PyPI（torchvision 与 +cpu torch 版本兼容；剔除 torch/triton 行）
+# 其余依赖走默认 PyPI（剔除 torch/torchvision/triton 行，前三者已装）
 COPY requirements.txt .
 RUN grep -vE "^(torch|torchvision|triton)" requirements.txt > /tmp/req.txt \
-    && pip install --no-cache-dir torchvision==0.20.1 -r /tmp/req.txt
+    && pip install --no-cache-dir -r /tmp/req.txt
 
 COPY . .
 
