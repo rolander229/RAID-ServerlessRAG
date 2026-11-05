@@ -1,7 +1,7 @@
 # MOPAR 全流程指南：切分 → 封装 → K8s 部署
 
 > 面向后来者的实操文档。所有命令均在本仓库实测通过（Linux 集群 + macOS 开发机）。
-> 配套材料：`K8S_E2E_FIXLIST.md`（历史修复清单）、`scripts/k8s_e2e.sh`（一键脚本）。
+> 配套材料：[MODEL_E2E_TASKS.md](./MODEL_E2E_TASKS.md)（接下来的部署任务清单）、`K8S_E2E_FIXLIST.md`（历史修复清单，仓库根）、`scripts/k8s_e2e.sh`（一键脚本）。
 
 ---
 
