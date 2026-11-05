@@ -41,10 +41,27 @@ uv pip install --python .venv/bin/python \
   --index-url https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 # 预训练权重缓存（CNN 类模型需要；constructed 模型不需要）
-export TORCH_HOME=/path/to/torch-home   # 内有 hub/checkpoints/vgg16-*.pth 等
+export TORCH_HOME=/path/to/torch-home
+# Windows：bash 命令在 WSL2/Git Bash 执行；venv 激活用 .venv\Scripts\Activate.ps1   # 内有 hub/checkpoints/vgg16-*.pth 等
 ```
 
 > `requirements.txt` 中 `triton` 带 `sys_platform == "linux"` 标记（macOS 自动跳过）。
+
+**Windows（amd64）开发机**（PowerShell）：
+
+```powershell
+git clone git@github.com:rolander229/RAID-ServerlessRAG.git
+cd RAID-ServerlessRAG; git checkout k8s-prep
+uv venv --python 3.10
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt            # triton 带 linux 标记，Windows 自动跳过
+$env:TORCH_HOME = "D:\mopar\torch-home"   # 内有 hub\checkpoints\vgg16-*.pth
+```
+
+Windows 注意事项：
+- `scripts/*.sh` 是 bash 脚本——用 **WSL2**（推荐，kubectl/docker 都在 WSL 内）或 Git Bash 执行；
+- 镜像构建用 Docker Desktop（WSL2 后端），buildx 命令与 Linux 完全一致（见 §5）；
+- kubectl 在 PowerShell 与 WSL 中均可用，对远程集群操作等价。
 
 ### 1.2 部署机（Linux 集群节点）
 
@@ -59,12 +76,14 @@ export TORCH_HOME=/path/to/torch-home   # 内有 hub/checkpoints/vgg16-*.pth 等
 ```bash
 # 前提：已构建镜像（§5）且推送到 harbor
 scripts/k8s_e2e.sh vgg16 4 224 \
-  --image gpu-harbor.act.buaa.edu.cn/user-xuedh25/mopar-slice-runner:v0.4 \
+  --image gpu-harbor.act.buaa.edu.cn/<username>/mopar-slice-runner:v0.4 \
   --namespace mopar-vgg16 \
-  --node-selector kubernetes.io/hostname=dell-52 \
+  --node-selector kubernetes.io/hostname=<node> \
   --mem-limit-mi 1024
 ```
 
+> `<node>` 换成你的实际节点名（`kubectl get nodes` 查看；我们的集群 worker 是 dell-51/52 中的 52）。
+>
 脚本自动完成 7 步：**切分 → 渲染 → 幂等清理 → 部署 → 等待就绪 → 集群内探针 → 采集与成绩单**。
 产物在 `build/e2e/<model>/`：`manifest.json`、`manifests/`、`a4_logs/`、`summary.md`。
 
@@ -137,6 +156,15 @@ manifest → Architect(蓝图) → Developer(适配器) → K8s Engineer(渲染+
 
 - LLM 只决定“做什么”（命名/拓扑/适配逻辑）；**资源数字一律来自 `k8s_render`**（服务端注入，LLM 无法篡改）。
 - 运行：`python -m capsule.m2s_k8s.runner --manifest ... --out ...`；`--fake-llm` 仅用于离线调试。
+- **LLM 凭证自配（必须，各人用自己的账号）**：运行器读取环境变量（OpenAI 兼容协议）。
+  在**仓库根**创建 `.env`（勿提交），示例：
+  ```bash
+  ARK_API_KEY=sk-********                    # 你自己的 key
+  ARK_BASE_URL=https://api.deepseek.com      # 不设则用方舟默认 https://ark.cn-beijing.volces.com/api/v3
+  ARK_MODEL=deepseek-flash                   # 任何你有权限调用的 chat 模型
+  ```
+  运行前加载（Linux/macOS：`set -a; source .env; set +a`；Windows PowerShell：逐条 `$env:ARK_API_KEY="..."`）；
+  自检：`python -m capsule.m2s_k8s.runner --check-llm`。
 - 产物：`k8s_migrated/{blueprint.json, manifests/, adapters/, report.json}`。
 
 ### 4.2 确定性渲染器 `k8s_render`
@@ -146,7 +174,7 @@ python -m capsule.k8s_render \
   --manifest tests/fixtures/vgg16_manifest.json \
   --out build/k8s/vgg16 --namespace mopar-vgg16 \
   --image <harbor>/mopar-slice-runner:v0.4 \
-  --node-selector kubernetes.io/hostname=dell-52 \
+  --node-selector kubernetes.io/hostname=<node> \
   --requests-cpu 100m --mem-limit-mi 1024 \
   --weights-mode hostPath --weights-host-path /var/mopar/weights \
   --activations-mode omit --meta-load --bind 0.0.0.0 --transport inline
@@ -183,7 +211,10 @@ bash scripts/download_wheels.sh          # torch/torchvision(+cpu) + 依赖，�
 
 # 2) 交叉构建并推送（Mac ARM → linux/amd64）
 docker buildx build --platform linux/amd64 \
-  -t gpu-harbor.act.buaa.edu.cn/user-xuedh25/mopar-slice-runner:v0.4 --push .
+  -t gpu-harbor.act.buaa.edu.cn/<username>/mopar-slice-runner:v0.4 --push .
+# 推送前先登录：docker login gpu-harbor.act.buaa.edu.cn
+# （<username> 是你在 harbor 的项目空间名，向管理员申请开通）
+# Windows：同样命令在 Docker Desktop(WSL2 后端) 的 PowerShell/WSL 中执行，--platform 任何宿主架构都必须带
 ```
 
 要点：
@@ -284,7 +315,7 @@ ModelSpec(
 |------|------|----------|----------|
 | **CNN**（torchvision） | vgg16 / resnet50 | `TORCH_HOME` 缓存 checkpoint | 非 meta 模式需把 checkpoint 放权重卷；**有 BN buffer**（见 7.3） |
 | **constructed Transformer** | bert_3_0b（8 片）/ inception_transformer | 代码构造，**无需下载** | 直接 `--meta-load` 即可；内存曲线锯齿明显，天然多片 |
-| **真 LLM**（HF） | qwen3-1.7b / chatglm3-6b | 共享模型目录（/storage/.../models） | GPU 资源 + P-a 形态（见 7.4）；**tied weights 约束**（见 7.3） |
+| **真 LLM**（HF） | qwen3-1.7b / chatglm3-6b | 共享模型目录（节点本地路径，如 /var/mopar/models） | GPU 资源 + P-a 形态（见 7.4）；**tied weights 约束**（见 7.3） |
 
 ### 7.3 分片与加载的两个硬约束
 
@@ -321,7 +352,7 @@ ModelSpec(
 ```bash
 # ① constructed Transformer（零下载，多片天然）
 scripts/k8s_e2e.sh bert_3_0b 8 448 --image <img> --namespace mopar-bert3b \
-  --node-selector kubernetes.io/hostname=dell-52 --mem-limit-mi 2048
+  --node-selector kubernetes.io/hostname=<node> --mem-limit-mi 2048
 
 # ② 真 LLM（需 GPU + 权重目录；P-a 形态单独渲染 GPU 资源）
 #    （v0 渲染器仅预留 GPU 字段，qwen3 形态见 m2s-k8s-adaptation-plan.md K2 节）
@@ -351,7 +382,7 @@ docker buildx build --platform linux/amd64 -t IMG --push .
 
 # 一键端到端
 scripts/k8s_e2e.sh vgg16 4 224 --image IMG --namespace mopar-vgg16 \
-  --node-selector kubernetes.io/hostname=dell-52 --mem-limit-mi 1024
+  --node-selector kubernetes.io/hostname=<node> --mem-limit-mi 1024
 
 # 验收
 kubectl get pods -n mopar-vgg16
